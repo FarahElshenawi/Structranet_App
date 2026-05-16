@@ -1,0 +1,23 @@
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.env
+output/
+*.gns3project
+.DS_Store
+*.egg-info/
+dist/
+build/
+.vite/
+
+# Python
+ai-engine/__pycache__/
+ai-engine/venv/
+env/
+*.pyc
+
+# Environment variables
+ai-engine/.env
+client/.env
+backend/.env

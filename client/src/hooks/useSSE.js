@@ -7,8 +7,12 @@ import { subscribeSSE } from "../lib/api";
  *   phase_change, thought, config_text, topology_ready, requirements_ready,
  *   summary_ready, phase2_progress, export_progress, complete, error, keepalive
  *
- * Returns { thoughts, configTexts, topology, requirements, summary, status,
- *           currentPhase, startStream, stopStream, reset }
+ * Returns { thoughts, configTexts, topology, requirements, summary, phase, status,
+ *           startStream, stopStream, reset }
+ *
+ * phase: { phase, sub_phase } | null
+ *   phase: "generating" | "review" | "exporting" | "success" | "error"
+ *   sub_phase: "building" | "generating_configs" | "validating" | null
  */
 export default function useSSE() {
   const [thoughts, setThoughts] = useState([]);
@@ -17,7 +21,7 @@ export default function useSSE() {
   const [requirements, setRequirements] = useState(null);
   const [summary, setSummary] = useState(null);
   const [status, setStatus] = useState("idle"); // idle | streaming | complete | error
-  const [currentPhase, setCurrentPhase] = useState(null); // "thinking" | "building" | "configuring" | "exporting"
+  const [phase, setPhase] = useState(null); // { phase, sub_phase }
   const esRef = useRef(null);
 
   const reset = useCallback(() => {
@@ -27,7 +31,7 @@ export default function useSSE() {
     setRequirements(null);
     setSummary(null);
     setStatus("idle");
-    setCurrentPhase(null);
+    setPhase(null);
     if (esRef.current) {
       esRef.current.close();
       esRef.current = null;
@@ -41,17 +45,7 @@ export default function useSSE() {
     const handlers = {
       phase_change: (data) => {
         // data: { phase, sub_phase }
-        if (data.sub_phase) {
-          setCurrentPhase(data.sub_phase);
-        } else if (data.phase === "generating") {
-          setCurrentPhase("building");
-        } else if (data.phase === "review") {
-          setCurrentPhase("review");
-        } else if (data.phase === "exporting") {
-          setCurrentPhase("exporting");
-        } else if (data.phase === "success") {
-          setCurrentPhase(null);
-        }
+        setPhase(data);
       },
 
       thought: (data) => {
@@ -60,10 +54,11 @@ export default function useSSE() {
       },
 
       config_text: (data) => {
-        // data: { device: "Core-Router", chunk: "...", is_start: bool }
-        const device = data.device || "device";
+        // data: { device_name, device_type, chunk, start, done }
+        // Also support: { device, chunk, is_start, is_first }
+        const device = data.device_name || data.device || "device";
         const chunk = data.chunk || "";
-        const isStart = data.is_start || data.is_first;
+        const isStart = data.start || data.is_start || data.is_first;
 
         setConfigTexts((prev) => {
           if (isStart) {
@@ -93,24 +88,22 @@ export default function useSSE() {
 
       phase2_progress: (data) => {
         // data: { status: "generating_configs" }
-        setCurrentPhase("configuring");
+        setPhase((prev) => ({ ...prev, sub_phase: "generating_configs" }));
       },
 
       export_progress: (data) => {
         // data: { step: "exporting" | "validating" }
-        setCurrentPhase("exporting");
+        setPhase((prev) => ({ ...prev, sub_phase: "validating" }));
       },
 
       complete: (data) => {
-        // data: { download_url, validator_passed, file_size_bytes, node_count, link_count, configured_count }
+        setPhase({ phase: "success", sub_phase: null });
         setStatus("complete");
-        setCurrentPhase(null);
       },
 
       error: (data) => {
-        // data: { message, phase }
         setStatus("error");
-        setCurrentPhase(null);
+        setPhase({ phase: "error", sub_phase: null });
       },
 
       keepalive: () => {
@@ -120,7 +113,7 @@ export default function useSSE() {
 
     esRef.current = subscribeSSE(sessionId, handlers, () => {
       setStatus("error");
-      setCurrentPhase(null);
+      setPhase({ phase: "error", sub_phase: null });
     });
   }, [reset]);
 
@@ -130,7 +123,7 @@ export default function useSSE() {
       esRef.current = null;
     }
     setStatus("idle");
-    setCurrentPhase(null);
+    setPhase(null);
   }, []);
 
   return {
@@ -139,8 +132,8 @@ export default function useSSE() {
     topology,
     requirements,
     summary,
+    phase,
     status,
-    currentPhase,
     startStream,
     stopStream,
     reset,

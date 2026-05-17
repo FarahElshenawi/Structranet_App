@@ -4,6 +4,7 @@ import cors from "cors";
 import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
+import { createProxyMiddleware } from "http-proxy-middleware";
 import User from "./models/User.js";
 import UserChat from "./models/userChat.js";
 import Chat from "./models/chat.js";
@@ -275,6 +276,26 @@ app.delete("/api/chats/:chatId", requireAuth, async (req, res) => {
   }
 });
 
+/* ==== CHAT SESSION LINK ==== */
+app.put("/api/chats/:chatId/session", requireAuth, async (req, res) => {
+  const { chatId } = req.params;
+  const { sessionId } = req.body;
+  const userId = req.userId.toString();
+
+  try {
+    const chat = await Chat.findOne({ _id: chatId, userId });
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+    chat.sessionId = sessionId;
+    await chat.save();
+
+    res.json({ message: "Session ID updated successfully" });
+  } catch (err) {
+    console.error("Update session error:", err);
+    res.status(500).json({ error: "Failed to update session" });
+  }
+});
+
 /* ==== GET PROFILE ==== */
 app.get("/api/profile", requireAuth, async (req, res) => {
   try {
@@ -295,7 +316,6 @@ app.put("/api/profile", requireAuth, async (req, res) => {
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    // Build the profile object — only update fields that are provided
     if (!user.gns3Profile) user.gns3Profile = {};
 
     if (version !== undefined) user.gns3Profile.version = version;
@@ -315,7 +335,32 @@ app.put("/api/profile", requireAuth, async (req, res) => {
   }
 });
 
+/* ================= FASTAPI PROXY ================= */
+const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
+
+app.use(
+  "/api/ai",
+  createProxyMiddleware({
+    target: FASTAPI_URL,
+    changeOrigin: true,
+    on: {
+      proxyReq: (proxyReq, req) => {
+        const queryToken = req.query && req.query.token;
+        if (queryToken && !proxyReq.getHeader("Authorization")) {
+          proxyReq.setHeader("Authorization", `Bearer ${queryToken}`);
+        }
+      },
+    },
+  })
+);
+
+/* ==== HEALTH ==== */
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", service: "express" });
+});
+
 app.listen(port, () => {
   connect();
   console.log(`🚀 Server running on port ${port}`);
+  console.log(`📡 Proxying /api/ai → ${FASTAPI_URL}`);
 });

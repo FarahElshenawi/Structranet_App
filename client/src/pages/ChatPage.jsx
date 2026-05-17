@@ -1090,6 +1090,9 @@ export default function ChatPage() {
         history={history}
         onSelectHistory={handleSelectHistory}
         onDeleteChat={handleDeleteChat}
+        onOpenProfile={() => setProfileOpen(true)}
+        onLogout={logout}
+        user={user}
       />
 
       {/* ── Topology Viewer (fullscreen overlay) ───────────────────────────── */}

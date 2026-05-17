@@ -1,15 +1,16 @@
 // ── API Client for StructuraNet AI ──────────────────────────────────────────
-// Express backend: Auth + Chat management (port 3000)
-// FastAPI backend: AI pipeline + SSE + GNS3 export (port 8000)
 //
-// All URLs match the ACTUAL backend routes:
-//   Express: /api/auth/signup, /api/auth/signin, /api/chats, /api/userchats
-//   FastAPI: /api/sessions, /api/sessions/{id}/generate, etc.
-
-const AUTH_URL = import.meta.env.VITE_AUTH_URL || "http://localhost:3000";
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+// Architecture:  React :5173 → Vite proxy → Express :3000 → FastAPI :8000
+//
+// Express handles:  Auth, Chat, Profile routes directly
+// FastAPI handles:  AI sessions, SSE streaming, GNS3 export
+//
+// All /api/* requests use the Vite proxy (relative URLs).
+// For SSE (EventSource), auth token is passed via ?token= query param
+// since EventSource doesn't support custom headers.
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
 function getToken() {
   return localStorage.getItem("token");
 }
@@ -41,110 +42,155 @@ async function request(url, options = {}) {
   return res.json();
 }
 
-// ── Auth (Express on port 3000) ─────────────────────────────────────────────
-// Backend routes: POST /api/auth/signup, POST /api/auth/signin
+// ── Auth (Express on port 3000, via Vite proxy) ──────────────────────────────
 
 export async function register({ username, email, password }) {
-  // Backend expects { username, email, password } and returns { message }
-  return request(`${AUTH_URL}/api/auth/signup`, {
+  return request("/api/auth/signup", {
     method: "POST",
     body: JSON.stringify({ username, email, password }),
   });
 }
 
 export async function login({ email, password }) {
-  // Backend expects { email, password } and returns { token, user: { id, username, email } }
-  return request(`${AUTH_URL}/api/auth/signin`, {
+  return request("/api/auth/signin", {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
 }
 
-// ── Chat History (Express on port 3000) ─────────────────────────────────────
-// Backend routes: GET /api/userchats, POST /api/chats, GET /api/chats/:chatId,
-//                 POST /api/chats/:chatId/messages
+// ── Chat History (Express on port 3000, via Vite proxy) ──────────────────────
 
 export async function getChats() {
-  // Returns { chats: [...] } — each item has _id, userId, chatId, title, createdAt
-  return request(`${AUTH_URL}/api/userchats`);
+  const data = await request("/api/userchats");
+  return data.chats || data;
 }
 
 export async function getChat(chatId) {
-  // Returns Chat object with messages
-  return request(`${AUTH_URL}/api/chats/${chatId}`);
+  return request(`/api/chats/${chatId}`);
 }
 
-export async function createChat({ text }) {
-  // Backend expects { text, images?: [] } for the first message
-  return request(`${AUTH_URL}/api/chats`, {
+export async function createChat({ text, title }) {
+  return request("/api/chats", {
     method: "POST",
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, title: title || text?.slice(0, 40) || "New Chat" }),
   });
 }
 
 export async function addMessage(chatId, messages) {
-  // Append messages to existing chat
-  return request(`${AUTH_URL}/api/chats/${chatId}/messages`, {
+  return request(`/api/chats/${chatId}/messages`, {
     method: "POST",
     body: JSON.stringify({ messages }),
   });
 }
 
 export async function deleteChat(chatId) {
-  return request(`${AUTH_URL}/api/chats/${chatId}`, { method: "DELETE" });
+  return request(`/api/chats/${chatId}`, { method: "DELETE" });
 }
 
-// ── FastAPI — AI Pipeline (port 8000) ───────────────────────────────────────
-// All routes are under /api/sessions/{id}/...
+export async function updateChatSessionId(chatId, sessionId) {
+  // Express doesn't have this route yet, so we use the chat update mechanism
+  // This is non-critical — if it fails, the session just won't be linked to the chat
+  try {
+    return request(`/api/chats/${chatId}/session`, {
+      method: "PUT",
+      body: JSON.stringify({ sessionId }),
+    });
+  } catch {
+    // Non-critical — session linking is optional
+    return null;
+  }
+}
 
-export async function createSession(profile) {
-  // POST /api/sessions — returns { session_id, status, profile, inventory }
-  return request(`${API_URL}/api/sessions`, {
+// ── User Profile (Express on port 3000, via Vite proxy) ──────────────────────
+
+export async function getUserProfile() {
+  return request("/api/profile");
+}
+
+export async function updateUserProfile(profile) {
+  return request("/api/profile", {
+    method: "PUT",
+    body: JSON.stringify(profile),
+  });
+}
+
+// ── FastAPI — AI Pipeline (via Vite proxy → Express → FastAPI :8000) ────────
+//
+// All /api/ai/* requests are proxied by Express to FastAPI :8000.
+// The frontend calls /api/ai/... and Express handles forwarding,
+// including SSE stream piping and file download streaming.
+
+export async function createSession(profile = {}) {
+  return request("/api/ai/sessions", {
     method: "POST",
-    body: JSON.stringify(profile || {}),
+    body: JSON.stringify({ profile }),
   });
 }
 
 export async function getSession(sessionId) {
-  // GET /api/sessions/{id} — returns SessionStatus
-  return request(`${API_URL}/api/sessions/${sessionId}`);
+  return request(`/api/ai/sessions/${sessionId}`);
 }
 
 export async function startGeneration(sessionId, prompt, projectName, securityProfile) {
-  // POST /api/sessions/{id}/generate — session_id goes in URL, not body
-  return request(`${API_URL}/api/sessions/${sessionId}/generate`, {
+  return request(`/api/ai/sessions/${sessionId}/generate`, {
     method: "POST",
     body: JSON.stringify({
-      request: prompt,           // backend expects field "request", not "prompt"
-      project_name: projectName,
+      request: prompt,
+      project_name: projectName || undefined,
       security_profile: securityProfile || "none",
     }),
   });
 }
 
 export async function editAndRegenerate(sessionId, feedback) {
-  // POST /api/sessions/{id}/edit — backend expects { feedback }, not { edits }
-  return request(`${API_URL}/api/sessions/${sessionId}/edit`, {
+  return request(`/api/ai/sessions/${sessionId}/edit`, {
     method: "POST",
     body: JSON.stringify({ feedback }),
   });
 }
 
 export async function approveTopology(sessionId) {
-  // POST /api/sessions/{id}/approve — no body needed, session_id is in URL
-  return request(`${API_URL}/api/sessions/${sessionId}/approve`, {
+  return request(`/api/ai/sessions/${sessionId}/approve`, {
     method: "POST",
   });
 }
 
 // ── SSE Streaming ────────────────────────────────────────────────────────────
-// GET /api/sessions/{id}/events — SSE with NAMED events
-// Event types: phase_change, thought, topology_ready, requirements_ready,
-//              summary_ready, phase2_progress, export_progress, complete, error, keepalive
+//
+// GET /api/ai/sessions/:id/events → EventSource with named events
+//
+// Uses query-param auth (?token=xxx) since the EventSource API
+// does not support custom HTTP headers. The Express requireAuth
+// middleware accepts tokens from both Authorization header and
+// query parameter.
+//
+// Named SSE events from the pipeline:
+//   phase_change     → { phase, sub_phase }
+//   thought          → { id, type, content, timestamp }
+//   config_text      → { device_name, device_type, chunk, start, done }
+//   topology_ready   → TopologyData { name, nodes, links, node_count, link_count }
+//   requirements_ready → [ RequiredAppliance ]
+//   summary_ready    → TopologySummary { thinking_text, thoughts, design_review, assumptions }
+//   phase2_progress  → { message }
+//   export_progress  → { message }
+//   complete         → { gns3project_ready, validator_passed }
+//   error            → { error }
+//   keepalive        → {}
 
-export function subscribeSSE(sessionId, handlers, onError) {
-  const url = `${API_URL}/api/sessions/${sessionId}/events`;
+export function subscribeSSE(sessionId, handlers = {}, onError) {
+  const token = getToken();
+  const url = `/api/ai/sessions/${sessionId}/events${
+    token ? `?token=${encodeURIComponent(token)}` : ""
+  }`;
   const es = new EventSource(url);
+
+  const parse = (e) => {
+    try {
+      return JSON.parse(e.data);
+    } catch {
+      return {};
+    }
+  };
 
   // Register named event listeners — NOT es.onmessage (which misses named events)
   const eventNames = [
@@ -163,121 +209,94 @@ export function subscribeSSE(sessionId, handlers, onError) {
 
   eventNames.forEach((eventName) => {
     es.addEventListener(eventName, (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (handlers[eventName]) {
-          handlers[eventName](data);
-        }
-        // Auto-close on terminal events
-        if (eventName === "complete" || eventName === "error") {
-          es.close();
-        }
-      } catch {
-        // non-JSON data, ignore
+      const data = parse(e);
+      if (handlers[eventName]) {
+        handlers[eventName](data);
+      }
+      // Auto-close on terminal events that have data (not native EventSource errors)
+      if (eventName === "complete") {
+        es.close();
+      }
+      if (eventName === "error" && e.data) {
+        es.close();
       }
     });
   });
 
+  // Native EventSource error — connection lost or auth failure.
+  // Only close on explicit errors, not reconnection attempts.
   es.onerror = (err) => {
-    if (onError) onError(err);
-    es.close();
+    // EventSource auto-reconnects — only close if we have a critical error
+    if (es.readyState === EventSource.CLOSED) {
+      if (onError) onError(err);
+    }
   };
 
   return es;
 }
 
-// ── GNS3 Export ──────────────────────────────────────────────────────────────
-// GET /api/sessions/{id}/download — returns .gns3project zip
+// ── Downloads (via Vite proxy → Express → FastAPI) ───────────────────────────
+//
+// All downloads go through the Express proxy → FastAPI pipeline.
+// The helper triggers a browser download with the correct filename.
 
-export async function downloadGns3(sessionId) {
-  const res = await fetch(`${API_URL}/api/sessions/${sessionId}/download`, {
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error("Download failed");
+async function downloadFile(url, filename) {
+  const res = await fetch(url, { headers: authHeaders() });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ message: "Download failed" }));
+    throw new Error(err.detail || err.message || "Download failed");
+  }
   const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
+  const blobUrl = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = `${sessionId}.gns3project`;
+  a.href = blobUrl;
+  a.download = filename;
   a.click();
-  URL.revokeObjectURL(url);
+  URL.revokeObjectURL(blobUrl);
 }
 
-// ── Download Configs ZIP ───────────────────────────────────────────────────
-// GET /api/sessions/{id}/download/configs — returns configs.zip
-
-export async function downloadConfigsZip(sessionId) {
-  const res = await fetch(`${API_URL}/api/sessions/${sessionId}/download/configs`, {
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error("Configs download failed");
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `configs-${sessionId}.zip`;
-  a.click();
-  URL.revokeObjectURL(url);
+export async function downloadGns3(sessionId, projectName) {
+  const filename = projectName
+    ? `${projectName}.gns3project`
+    : `${sessionId}.gns3project`;
+  return downloadFile(`/api/ai/sessions/${sessionId}/download`, filename);
 }
 
-// ── Download Requirements JSON ───────────────────────────────────────────────
-// GET /api/sessions/{id}/download/requirements — returns requirements.json
-
-export async function downloadRequirements(sessionId) {
-  const res = await fetch(`${API_URL}/api/sessions/${sessionId}/download/requirements`, {
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error("Requirements download failed");
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `requirements-${sessionId}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+export async function downloadConfigsZip(sessionId, projectName) {
+  const filename = projectName
+    ? `${projectName}_configs.zip`
+    : `${sessionId}_configs.zip`;
+  return downloadFile(`/api/ai/sessions/${sessionId}/download/configs`, filename);
 }
 
-// ── Topology JSON ───────────────────────────────────────────────────────────
-// GET /api/sessions/{id}/topology
+export async function downloadRequirements(sessionId, projectName) {
+  const filename = projectName
+    ? `${projectName}_requirements.json`
+    : `${sessionId}_requirements.json`;
+  return downloadFile(`/api/ai/sessions/${sessionId}/download/requirements`, filename);
+}
+
+// ── Topology JSON ────────────────────────────────────────────────────────────
 
 export async function getTopology(sessionId) {
-  return request(`${API_URL}/api/sessions/${sessionId}/topology`);
+  return request(`/api/ai/sessions/${sessionId}/topology`);
 }
 
 // ── Requirements ────────────────────────────────────────────────────────────
-// GET /api/sessions/{id}/requirements
 
 export async function getRequirements(sessionId) {
-  return request(`${API_URL}/api/sessions/${sessionId}/requirements`);
+  return request(`/api/ai/sessions/${sessionId}/requirements`);
 }
 
 // ── Catalog ─────────────────────────────────────────────────────────────────
-// GET /api/catalog
 
 export async function getCatalog(catalogPath) {
   const params = catalogPath ? `?path=${encodeURIComponent(catalogPath)}` : "";
-  return request(`${API_URL}/api/catalog${params}`);
-}
-
-// ── GNS3 Profile (Express on port 3000) ─────────────────────────────────────
-// GET /api/profile, PUT /api/profile
-
-export async function getUserProfile() {
-  // Returns { profile: { version, features: { iou, qemu, docker }, images: [{ name, filename }] } }
-  return request(`${AUTH_URL}/api/profile`);
-}
-
-export async function updateUserProfile(profile) {
-  // profile: { version?, features?, images? }
-  return request(`${AUTH_URL}/api/profile`, {
-    method: "PUT",
-    body: JSON.stringify(profile),
-  });
+  return request(`/api/ai/catalog${params}`);
 }
 
 // ── Health ──────────────────────────────────────────────────────────────────
-// GET /api/health
 
 export async function healthCheck() {
-  return request(`${API_URL}/api/health`);
+  return request("/api/health");
 }

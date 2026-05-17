@@ -1,68 +1,80 @@
 import { Icon, PATHS } from "./Icons";
 
-const TYPE_STYLES = {
-  understanding: { color: "#2563EB", bg: "#EFF6FF", icon: PATHS.search, label: "Understanding" },
-  decision: { color: "#166534", bg: "#F0FDF4", icon: PATHS.check, label: "Decision" },
-  assumption: { color: "#D97706", bg: "#FFFBEB", icon: PATHS.alert, label: "Assumption" },
-  info: { color: "#6B7280", bg: "#F9FAFB", icon: PATHS.settings, label: "Info" },
+/**
+ * Streaming text display — Claude-style inline bold-labeled paragraphs.
+ * Replaces the old colored-card approach.
+ *
+ * Each thought has: { id, type, content, timestamp }
+ * Types: understanding, decision, assumption, warning
+ */
+const TYPE_LABELS = {
+  understanding: "Understanding your request",
+  decision: "Device selection",
+  assumption: "Assumptions",
+  warning: "Warning",
+};
+
+const TYPE_ICONS = {
+  understanding: PATHS.search,
+  decision: PATHS.sparkles,
+  assumption: PATHS.alert,
+  warning: PATHS.alert,
 };
 
 export default function ThoughtStream({ thoughts = [] }) {
   if (thoughts.length === 0) return null;
 
+  // Group consecutive thoughts of same type for paragraph flow
+  // But render each as its own bold-labeled paragraph
   return (
-    <div
-      style={{
-        fontFamily: "'Geist', system-ui, sans-serif",
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-        <Icon d={PATHS.sparkles} size={14} style={{ color: "#166534" }} />
-        <span style={{ fontSize: 12, fontWeight: 600, color: "#374151", letterSpacing: "0.03em" }}>
-          AI REASONING
-        </span>
+    <div style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+      {/* Streaming text paragraphs */}
+      <div
+        style={{
+          fontSize: 14,
+          color: "#374151",
+          lineHeight: 1.7,
+          marginBottom: 16,
+        }}
+      >
+        {thoughts.map((t, i) => {
+          const label = TYPE_LABELS[t.type] || "Analysis";
+          const content = t.text || t.content || "";
+          const isLast = i === thoughts.length - 1;
+
+          return (
+            <span key={t.id || i}>
+              <strong style={{ color: "#111", fontWeight: 600 }}>{label}</strong>
+              {" -- "}
+              {content}
+              {isLast ? (
+                <span
+                  style={{
+                    display: "inline-block",
+                    width: 2,
+                    height: 14,
+                    background: "#166534",
+                    verticalAlign: "text-bottom",
+                    marginLeft: 1,
+                    animation: "blink 1s step-end infinite",
+                  }}
+                />
+              ) : (
+                <>
+                  <br />
+                  <br />
+                </>
+              )}
+            </span>
+          );
+        })}
       </div>
 
-      {thoughts.map((t, i) => {
-        const style = TYPE_STYLES[t.type] || TYPE_STYLES.info;
-        return (
-          <div
-            key={i}
-            style={{
-              display: "flex",
-              gap: 10,
-              alignItems: "flex-start",
-              padding: "10px 12px",
-              borderRadius: 8,
-              background: style.bg,
-              border: `1px solid ${style.color}15`,
-              animation: "fadeInUp .2s ease-out",
-            }}
-          >
-            <Icon d={style.icon} size={14} style={{ color: style.color, flexShrink: 0, marginTop: 2 }} />
-            <div style={{ flex: 1 }}>
-              <div
-                style={{
-                  fontSize: 10,
-                  fontWeight: 600,
-                  color: style.color,
-                  letterSpacing: "0.05em",
-                  marginBottom: 3,
-                  textTransform: "uppercase",
-                }}
-              >
-                {style.label}
-              </div>
-              <div style={{ fontSize: 13, color: "#374151", lineHeight: 1.5 }}>{t.text || t.content}</div>
-            </div>
-          </div>
-        );
-      })}
-
-      <style>{`@keyframes fadeInUp { from { opacity:0; transform:translateY(6px) } to { opacity:1; transform:none } }`}</style>
+      <style>{`
+        @keyframes blink {
+          50% { opacity: 0; }
+        }
+      `}</style>
     </div>
   );
 }

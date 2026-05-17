@@ -105,12 +105,14 @@ app.post("/api/auth/signin", async (req, res) => {
 
 const requireAuth = (req, res, next) => {
   try {
+    // Support Authorization header OR ?token= query param (for SSE/EventSource)
     const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ error: "No token" });
+    const queryToken = req.query && req.query.token;
+    const token = (authHeader && authHeader.split(" ")[1]) || queryToken;
 
-    const token = authHeader.split(" ")[1];
+    if (!token) return res.status(401).json({ error: "No token" });
+
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
     req.userId = decoded.userId.toString();
     next();
   } catch (err) {
@@ -270,6 +272,46 @@ app.delete("/api/chats/:chatId", requireAuth, async (req, res) => {
   } catch (err) {
     console.log(err);
     res.status(500).json({ error: "Error deleting chat" });
+  }
+});
+
+/* ==== GET PROFILE ==== */
+app.get("/api/profile", requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId).select("gns3Profile");
+    if (!user) return res.status(404).json({ error: "User not found" });
+    res.json({ profile: user.gns3Profile || {} });
+  } catch (err) {
+    console.error("Get profile error:", err);
+    res.status(500).json({ error: "Failed to fetch profile" });
+  }
+});
+
+/* ==== UPDATE PROFILE ==== */
+app.put("/api/profile", requireAuth, async (req, res) => {
+  try {
+    const { version, features, images } = req.body;
+
+    const user = await User.findById(req.userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    // Build the profile object — only update fields that are provided
+    if (!user.gns3Profile) user.gns3Profile = {};
+
+    if (version !== undefined) user.gns3Profile.version = version;
+    if (features !== undefined) {
+      user.gns3Profile.features = {
+        ...user.gns3Profile.features,
+        ...features,
+      };
+    }
+    if (images !== undefined) user.gns3Profile.images = images;
+
+    await user.save();
+    res.json({ profile: user.gns3Profile });
+  } catch (err) {
+    console.error("Update profile error:", err);
+    res.status(500).json({ error: "Failed to update profile" });
   }
 });
 

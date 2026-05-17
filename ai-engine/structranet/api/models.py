@@ -131,13 +131,27 @@ class TopologySummary(BaseModel):
 class SessionStatus(BaseModel):
     session_id: str
     phase: Literal["idle", "generating", "review", "exporting", "success", "error"]
-    sub_phase: Optional[Literal["thinking", "building", "finalizing"]] = None
+    sub_phase: Optional[Literal["thinking", "building", "finalizing", "streaming_configs"]] = None
     topology: Optional[TopologyData] = None
     summary: Optional[TopologySummary] = None
     requirements: List[RequiredAppliance] = []
     error: Optional[str] = None
     iteration: int = 0
     gns3project_ready: bool = False
+    config_texts: Dict[str, str] = {}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Config Text Streaming (SSE)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ConfigTextChunk(BaseModel):
+    """One chunk of a device's configuration text, streamed via SSE."""
+    device_name: str
+    device_type: str  # "dynamips", "vpcs", "iou", "qemu", "docker", etc.
+    chunk: str = ""   # A few characters of config text
+    start: bool = False  # True for the very first chunk of a new device
+    done: bool = False   # True when this device's full config has been sent
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

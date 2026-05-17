@@ -11,9 +11,12 @@ real-time progress streaming to the Next.js frontend.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
+import re
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +25,7 @@ from typing import Any, Dict
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 
 from structranet.api.models import (
@@ -190,6 +193,7 @@ async def get_session(session_id: str):
         error=session.error,
         iteration=session.state.iteration,
         gns3project_ready=session.gns3project_path is not None,
+        config_texts=session.config_texts,
     )
 
 
@@ -221,6 +225,8 @@ async def start_generation(
         session.profile.security_profile = body.security_profile
 
     session.state.last_request = body.request
+    if body.project_name:
+        session.project_name = body.project_name
 
     background_tasks.add_task(run_phase1, session, store, body.request)
     return {"status": "started", "session_id": session_id}
@@ -354,4 +360,86 @@ async def download_final_json(session_id: str):
         path=str(final_file),
         media_type="application/json",
         filename=final_file.name,
+    )
+
+
+@app.get("/api/sessions/{session_id}/download/configs")
+async def download_configs_zip(session_id: str):
+    """Download all device configurations as a ZIP file.
+
+    Each device gets its own file inside the ZIP:
+      - Routers (dynamips/iou/qemu): <name>.cfg
+      - VPCS hosts: <name>.vpc
+      - Docker containers: <name>.sh
+    """
+    session = await _get_session(session_id)
+    if not session.config_texts:
+        raise HTTPException(404, "No configurations available yet")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for device_name, config_text in session.config_texts.items():
+            # Determine extension from session data
+            ext = ".cfg"  # default
+            topo = session.final_dict or session.topology_dict or {}
+            nodes = topo.get("topology", {}).get("nodes", []) if isinstance(topo, dict) else []
+            for node in nodes:
+                if node.get("name") == device_name:
+                    ntype = node.get("node_type", "")
+                    if ntype == "vpcs":
+                        ext = ".vpc"
+                    elif ntype == "docker":
+                        ext = ".sh"
+                    break
+
+            safe_name = re.sub(r"[^\w\-.]", "_", device_name)
+            zf.writestr(f"{safe_name}{ext}", config_text)
+
+    buf.seek(0)
+    project_name = session.project_name or session.session_id
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{project_name}_configs.zip"',
+        },
+    )
+
+
+@app.get("/api/sessions/{session_id}/download/requirements")
+async def download_requirements_json(session_id: str):
+    """Download appliance requirements as a JSON file.
+
+    Uses technical appliance names as keys (e.g. "vpc", "c7200",
+    "ethernet_switch"). Values are the IOS image filename if required,
+    or an empty string if no image is needed.
+    """
+    session = await _get_session(session_id)
+    if not session.requirements:
+        raise HTTPException(404, "No requirements available yet")
+
+    # Build the simplified requirements dict:
+    # {appliance_type: count, ...} with image info
+    req_data = {}
+    for req in session.requirements:
+        template = req.template_name
+        # Use the technical template name as the key
+        if template not in req_data:
+            req_data[template] = {
+                "count": 0,
+                "image_file": req.image_file or "",
+                "image_required": req.image_required,
+                "category": req.category,
+                "node_type": req.node_type,
+            }
+        req_data[template]["count"] += 1
+
+    project_name = session.project_name or session.session_id
+    json_bytes = json.dumps(req_data, indent=2).encode("utf-8")
+    return StreamingResponse(
+        io.BytesIO(json_bytes),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{project_name}_requirements.json"',
+        },
     )

@@ -43,6 +43,9 @@ class Session:
     sub_phase: Optional[str] = None
     error: Optional[str] = None
 
+    # Project metadata
+    project_name: Optional[str] = None
+
     # Artifacts
     raw_topology: Any = None  # GNS3Project from Phase 1
     topology_dict: Optional[Dict[str, Any]] = None
@@ -50,6 +53,7 @@ class Session:
     topology_data: Optional[TopologyData] = None
     summary: Optional[TopologySummary] = None
     requirements: List[RequiredAppliance] = field(default_factory=list)
+    config_texts: Dict[str, str] = field(default_factory=dict)  # device_name -> config_text
     gns3project_path: Optional[str] = None
     validator_passed: Optional[bool] = None
 

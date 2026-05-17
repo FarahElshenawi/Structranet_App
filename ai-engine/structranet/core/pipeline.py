@@ -24,6 +24,7 @@ from structranet.ai.agent import (
     process_and_save_topology,
 )
 from structranet.api.models import (
+    ConfigTextChunk,
     ExportResponse,
     RequiredAppliance,
     ThoughtChunk,
@@ -41,6 +42,25 @@ from structranet.core.session import Session, SessionStore
 from structranet.core.thought_parser import parse_thinking_text
 
 logger = logging.getLogger("structranet.pipeline_runner")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Config streaming constants
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Characters per SSE chunk — small enough for smooth streaming,
+# large enough to not flood the event queue.
+CONFIG_CHUNK_SIZE = 6
+
+# Delay between chunks (seconds) — controls streaming speed.
+# 6 chars * 50/s ≈ 300 chars/sec (comfortable reading pace).
+CONFIG_CHUNK_DELAY = 0.02
+
+# Keys that carry configuration text inside node.properties.
+_CONFIG_CONTENT_KEYS = (
+    "startup_config_content",  # dynamips / iou / qemu routers
+    "startup_script",          # vpcs hosts
+    "start_command",           # docker containers
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -282,6 +302,127 @@ async def run_phase1(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  Config text extraction + streaming
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _extract_device_configs(final_dict: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Pull configuration text from every node that has a config.
+
+    Returns a list of dicts: [{"device_name": ..., "device_type": ..., "config_text": ...}]
+    ordered so that routers come first, then hosts, then everything else.
+    """
+    topo = final_dict.get("topology", {}) if isinstance(final_dict, dict) else {}
+    nodes = topo.get("nodes", []) if isinstance(topo, dict) else []
+
+    _ROUTER_TYPES = {"dynamips", "iou", "qemu"}
+    _HOST_TYPES = {"vpcs", "traceng"}
+
+    routers: List[Dict[str, str]] = []
+    hosts: List[Dict[str, str]] = []
+    other: List[Dict[str, str]] = []
+
+    for node in nodes:
+        ntype = node.get("node_type", "")
+        props = node.get("properties", {})
+        name = node.get("name", node.get("node_id", ""))
+
+        config_text = ""
+        for key in _CONFIG_CONTENT_KEYS:
+            val = props.get(key)
+            if val and isinstance(val, str):
+                config_text = val
+                break
+
+        if not config_text:
+            continue
+
+        entry = {
+            "device_name": name,
+            "device_type": ntype,
+            "config_text": config_text,
+        }
+
+        if ntype in _ROUTER_TYPES:
+            routers.append(entry)
+        elif ntype in _HOST_TYPES:
+            hosts.append(entry)
+        else:
+            other.append(entry)
+
+    return routers + hosts + other
+
+
+async def _stream_config_texts(
+    session: Session,
+    store: SessionStore,
+    final_dict: Dict[str, Any],
+) -> None:
+    """Stream each device's config text chunk-by-chunk via SSE.
+
+    After Phase 2 generates all configs, we simulate character-by-character
+    streaming so the frontend can render configs as they arrive, just like
+    Claude streams text.
+
+    The configs are already complete (Phase 2 LLM call finished), so we are
+    not waiting on the model — we are just delivering the text at a
+    comfortable reading pace.
+    """
+    device_configs = _extract_device_configs(final_dict)
+
+    if not device_configs:
+        logger.info("No device configs found — skipping config streaming")
+        return
+
+    # Announce streaming phase
+    session.sub_phase = "streaming_configs"
+    await store.broadcast(session, {
+        "event": "phase_change",
+        "data": {"phase": "exporting", "sub_phase": "streaming_configs"},
+    })
+
+    for device in device_configs:
+        name = device["device_name"]
+        ntype = device["device_type"]
+        text = device["config_text"]
+
+        # Store in session for later download
+        session.config_texts[name] = text
+
+        # Stream chunk-by-chunk
+        for i in range(0, len(text), CONFIG_CHUNK_SIZE):
+            chunk = text[i : i + CONFIG_CHUNK_SIZE]
+            await store.broadcast(session, {
+                "event": "config_text",
+                "data": ConfigTextChunk(
+                    device_name=name,
+                    device_type=ntype,
+                    chunk=chunk,
+                    start=(i == 0),
+                    done=False,
+                ).model_dump(),
+            })
+            await asyncio.sleep(CONFIG_CHUNK_DELAY)
+
+        # Signal this device's config is complete
+        await store.broadcast(session, {
+            "event": "config_text",
+            "data": ConfigTextChunk(
+                device_name=name,
+                device_type=ntype,
+                chunk="",
+                start=False,
+                done=True,
+            ).model_dump(),
+        })
+
+    logger.info(
+        "Config streaming complete: %d device(s), %d total chars",
+        len(device_configs),
+        sum(len(d["config_text"]) for d in device_configs),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  Phase 2 + Export
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -331,6 +472,16 @@ async def run_phase2_and_export(
         )
 
     session.final_dict = final_dict
+
+    # ── Stream config texts via SSE before export ──────────────────────
+    await _stream_config_texts(session, store, final_dict)
+
+    # ── Update sub_phase back to finalizing for export ─────────────────
+    session.sub_phase = "finalizing"
+    await store.broadcast(session, {
+        "event": "phase_change",
+        "data": {"phase": "exporting", "sub_phase": "finalizing"},
+    })
 
     await store.broadcast(session, {
         "event": "export_progress",

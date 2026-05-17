@@ -150,6 +150,7 @@ export function subscribeSSE(sessionId, handlers, onError) {
   const eventNames = [
     "phase_change",
     "thought",
+    "config_text",
     "topology_ready",
     "requirements_ready",
     "summary_ready",
@@ -202,6 +203,40 @@ export async function downloadGns3(sessionId) {
   URL.revokeObjectURL(url);
 }
 
+// ── Download Configs ZIP ───────────────────────────────────────────────────
+// GET /api/sessions/{id}/download/configs — returns configs.zip
+
+export async function downloadConfigsZip(sessionId) {
+  const res = await fetch(`${API_URL}/api/sessions/${sessionId}/download/configs`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error("Configs download failed");
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `configs-${sessionId}.zip`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Download Requirements JSON ───────────────────────────────────────────────
+// GET /api/sessions/{id}/download/requirements — returns requirements.json
+
+export async function downloadRequirements(sessionId) {
+  const res = await fetch(`${API_URL}/api/sessions/${sessionId}/download/requirements`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error("Requirements download failed");
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `requirements-${sessionId}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ── Topology JSON ───────────────────────────────────────────────────────────
 // GET /api/sessions/{id}/topology
 
@@ -222,6 +257,22 @@ export async function getRequirements(sessionId) {
 export async function getCatalog(catalogPath) {
   const params = catalogPath ? `?path=${encodeURIComponent(catalogPath)}` : "";
   return request(`${API_URL}/api/catalog${params}`);
+}
+
+// ── GNS3 Profile (Express on port 3000) ─────────────────────────────────────
+// GET /api/profile, PUT /api/profile
+
+export async function getUserProfile() {
+  // Returns { profile: { version, features: { iou, qemu, docker }, images: [{ name, filename }] } }
+  return request(`${AUTH_URL}/api/profile`);
+}
+
+export async function updateUserProfile(profile) {
+  // profile: { version?, features?, images? }
+  return request(`${AUTH_URL}/api/profile`, {
+    method: "PUT",
+    body: JSON.stringify(profile),
+  });
 }
 
 // ── Health ──────────────────────────────────────────────────────────────────

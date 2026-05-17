@@ -6,7 +6,20 @@ const PRIMARY = "#166534";
 const PRIMARY_HOVER = "#14532D";
 const BORDER = "#E5E7EB";
 
-export default function LoginPage({ onSwitchToRegister }) {
+const inputStyle = {
+  width: "100%",
+  padding: "10px 12px",
+  border: `1px solid ${BORDER}`,
+  borderRadius: 8,
+  fontSize: 14,
+  outline: "none",
+  color: "#111",
+  boxSizing: "border-box",
+  fontFamily: "inherit",
+  transition: "border-color .15s",
+};
+
+export default function LoginPage({ onSwitchToRegister, onBack }) {
   const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -34,21 +47,28 @@ export default function LoginPage({ onSwitchToRegister }) {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        fontFamily: "'Geist', system-ui, sans-serif",
+        fontFamily: "'Inter', system-ui, sans-serif",
       }}
     >
       <div
         style={{
-          width: 380,
+          width: 400,
           background: "white",
           borderRadius: 16,
           border: `1px solid ${BORDER}`,
-          padding: 40,
+          padding: 44,
           boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
         }}
       >
-        {/* Logo */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 32 }}>
+        {/* Brand */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            marginBottom: 36,
+          }}
+        >
           <div
             style={{
               width: 36,
@@ -63,12 +83,18 @@ export default function LoginPage({ onSwitchToRegister }) {
           >
             <NetworkIcon size={18} />
           </div>
-          <span style={{ fontWeight: 700, fontSize: 18, color: "#111" }}>Structranet AI</span>
+          <span style={{ fontWeight: 700, fontSize: 18, color: "#111" }}>
+            StructuraNet AI
+          </span>
         </div>
 
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: "#111", marginBottom: 6 }}>Welcome back</h1>
-        <p style={{ fontSize: 14, color: "#6B7280", marginBottom: 24 }}>
-          Sign in to continue generating network topologies
+        <h1
+          style={{ fontSize: 24, fontWeight: 700, color: "#111", marginBottom: 6 }}
+        >
+          Welcome back
+        </h1>
+        <p style={{ fontSize: 14, color: "#6B7280", marginBottom: 28 }}>
+          Sign in to continue designing network topologies
         </p>
 
         {error && (
@@ -88,13 +114,14 @@ export default function LoginPage({ onSwitchToRegister }) {
         )}
 
         <form onSubmit={handleSubmit}>
-          <div style={{ marginBottom: 16 }}>
+          {/* Email */}
+          <div style={{ marginBottom: 18 }}>
             <label
               style={{
+                display: "block",
                 fontSize: 12,
                 fontWeight: 600,
                 color: "#374151",
-                display: "block",
                 marginBottom: 6,
               }}
             >
@@ -104,26 +131,22 @@ export default function LoginPage({ onSwitchToRegister }) {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
               required
-              style={{
-                width: "100%",
-                padding: "10px 12px",
-                border: `1px solid ${BORDER}`,
-                borderRadius: 8,
-                fontSize: 14,
-                outline: "none",
-                color: "#111",
-                boxSizing: "border-box",
-              }}
+              style={inputStyle}
+              onFocus={(e) => (e.target.style.borderColor = PRIMARY)}
+              onBlur={(e) => (e.target.style.borderColor = BORDER)}
             />
           </div>
-          <div style={{ marginBottom: 24 }}>
+
+          {/* Password */}
+          <div style={{ marginBottom: 4 }}>
             <label
               style={{
+                display: "block",
                 fontSize: 12,
                 fontWeight: 600,
                 color: "#374151",
-                display: "block",
                 marginBottom: 6,
               }}
             >
@@ -133,19 +156,28 @@ export default function LoginPage({ onSwitchToRegister }) {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              placeholder="Enter your password"
               required
-              style={{
-                width: "100%",
-                padding: "10px 12px",
-                border: `1px solid ${BORDER}`,
-                borderRadius: 8,
-                fontSize: 14,
-                outline: "none",
-                color: "#111",
-                boxSizing: "border-box",
-              }}
+              style={inputStyle}
+              onFocus={(e) => (e.target.style.borderColor = PRIMARY)}
+              onBlur={(e) => (e.target.style.borderColor = BORDER)}
             />
           </div>
+
+          {/* Forgot password */}
+          <div style={{ textAlign: "right", marginBottom: 18 }}>
+            <span
+              style={{
+                fontSize: 12,
+                color: PRIMARY,
+                fontWeight: 500,
+                cursor: "pointer",
+              }}
+            >
+              Forgot password?
+            </span>
+          </div>
+
           <button
             type="submit"
             disabled={loading}
@@ -160,15 +192,25 @@ export default function LoginPage({ onSwitchToRegister }) {
               fontWeight: 600,
               cursor: loading ? "not-allowed" : "pointer",
               transition: "background .15s",
+              fontFamily: "inherit",
             }}
-            onMouseOver={(e) => !loading && (e.currentTarget.style.background = PRIMARY_HOVER)}
+            onMouseOver={(e) =>
+              !loading && (e.currentTarget.style.background = PRIMARY_HOVER)
+            }
             onMouseOut={(e) => (e.currentTarget.style.background = PRIMARY)}
           >
             {loading ? "Signing in..." : "Sign in"}
           </button>
         </form>
 
-        <div style={{ marginTop: 20, textAlign: "center", fontSize: 13, color: "#6B7280" }}>
+        <p
+          style={{
+            textAlign: "center",
+            fontSize: 13,
+            color: "#6B7280",
+            marginTop: 20,
+          }}
+        >
           Don't have an account?{" "}
           <button
             onClick={onSwitchToRegister}
@@ -179,11 +221,30 @@ export default function LoginPage({ onSwitchToRegister }) {
               fontWeight: 600,
               cursor: "pointer",
               fontSize: 13,
+              fontFamily: "inherit",
             }}
           >
-            Sign up
+            Create one
           </button>
-        </div>
+        </p>
+
+        {onBack && (
+          <div style={{ marginTop: 12, textAlign: "center" }}>
+            <button
+              onClick={onBack}
+              style={{
+                background: "none",
+                border: "none",
+                color: "#9CA3AF",
+                cursor: "pointer",
+                fontSize: 13,
+                fontFamily: "inherit",
+              }}
+            >
+              Back to home
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

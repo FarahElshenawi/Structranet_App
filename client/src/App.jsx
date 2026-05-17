@@ -1,49 +1,54 @@
-import { useEffect, useState } from "react";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import SignInPage from "./routes/signInPage/SignInPage";
-import SignUpPage from "./routes/signUpPage/SignUpPage";
-import DashboardPage from "./routes/dashboardPage/DashboardPage";
+import { useState } from "react";
+import { AuthProvider, useAuth } from "./context/AuthContext";
+import LoginPage from "./pages/LoginPage";
+import RegisterPage from "./pages/RegisterPage";
+import ChatPage from "./pages/ChatPage";
 
-const App = () => {
-  const [theme, setTheme] = useState(localStorage.getItem("theme") || "dark");
+const BORDER = "#E5E7EB";
 
-  useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-    document.body.setAttribute("data-theme", theme);
-    localStorage.setItem("theme", theme);
-  }, [theme]);
+function AppContent() {
+  const { user, loading } = useAuth();
+  const [page, setPage] = useState("login"); // login | register | chat
 
-  return (
-    <BrowserRouter>
-      <button
-        onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+  // Still checking token
+  if (loading) {
+    return (
+      <div
         style={{
-          position: "fixed",
-          top: "22px",
-          right: "24px",
-          zIndex: 2147483647,
-          width: "46px",
-          height: "46px",
-          borderRadius: "50%",
-          border: "1px solid rgba(120,120,120,0.25)",
-          background: theme === "dark" ? "#ffffff" : "#1f1f1f",
-          color: theme === "dark" ? "#111" : "#fff",
-          cursor: "pointer",
-          fontSize: "20px",
-          boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+          height: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#F9FAFB",
+          fontFamily: "'Geist', system-ui, sans-serif",
+          color: "#6B7280",
+          fontSize: 14,
         }}
       >
-        {theme === "dark" ? "☀️" : "🌙"}
-      </button>
+        Loading...
+      </div>
+    );
+  }
 
-      <Routes>
-        <Route path="/" element={<SignInPage />} />
-        <Route path="/sign-in" element={<SignInPage />} />
-        <Route path="/sign-up" element={<SignUpPage />} />
-        <Route path="/dashboard/*" element={<DashboardPage />} />
-      </Routes>
-    </BrowserRouter>
+  // Authenticated → Chat
+  if (user) {
+    return <ChatPage />;
+  }
+
+  // Not authenticated → Login / Register
+  if (page === "register") {
+    return <RegisterPage onSwitchToLogin={() => setPage("login")} />;
+  }
+
+  return (
+    <LoginPage onSwitchToRegister={() => setPage("register")} />
   );
-};
+}
 
-export default App;
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  );
+}

@@ -6,9 +6,8 @@ const PRIMARY = "#166534";
 const PRIMARY_HOVER = "#14532D";
 const BORDER = "#E5E7EB";
 
-export default function RegisterPage({ onSwitchToLogin }) {
-  const { registerUser } = useAuth();
-  const [username, setUsername] = useState("");
+export default function LoginPage({ onSwitchToRegister }) {
+  const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -19,9 +18,9 @@ export default function RegisterPage({ onSwitchToLogin }) {
     setError("");
     setLoading(true);
     try {
-      await registerUser({ username, email, password });
+      await login({ email, password });
     } catch (err) {
-      setError(err.message || "Registration failed");
+      setError(err.message || "Login failed");
     } finally {
       setLoading(false);
     }
@@ -48,6 +47,7 @@ export default function RegisterPage({ onSwitchToLogin }) {
           boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
         }}
       >
+        {/* Logo */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 32 }}>
           <div
             style={{
@@ -66,9 +66,9 @@ export default function RegisterPage({ onSwitchToLogin }) {
           <span style={{ fontWeight: 700, fontSize: 18, color: "#111" }}>Structranet AI</span>
         </div>
 
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: "#111", marginBottom: 6 }}>Create account</h1>
+        <h1 style={{ fontSize: 22, fontWeight: 700, color: "#111", marginBottom: 6 }}>Welcome back</h1>
         <p style={{ fontSize: 14, color: "#6B7280", marginBottom: 24 }}>
-          Start generating GNS3 topologies with AI
+          Sign in to continue generating network topologies
         </p>
 
         {error && (
@@ -89,28 +89,15 @@ export default function RegisterPage({ onSwitchToLogin }) {
 
         <form onSubmit={handleSubmit}>
           <div style={{ marginBottom: 16 }}>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>
-              Username
-            </label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
+            <label
               style={{
-                width: "100%",
-                padding: "10px 12px",
-                border: `1px solid ${BORDER}`,
-                borderRadius: 8,
-                fontSize: 14,
-                outline: "none",
-                color: "#111",
-                boxSizing: "border-box",
+                fontSize: 12,
+                fontWeight: 600,
+                color: "#374151",
+                display: "block",
+                marginBottom: 6,
               }}
-            />
-          </div>
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>
+            >
               Email
             </label>
             <input
@@ -131,7 +118,15 @@ export default function RegisterPage({ onSwitchToLogin }) {
             />
           </div>
           <div style={{ marginBottom: 24 }}>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>
+            <label
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: "#374151",
+                display: "block",
+                marginBottom: 6,
+              }}
+            >
               Password
             </label>
             <input
@@ -139,7 +134,6 @@ export default function RegisterPage({ onSwitchToLogin }) {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              minLength={6}
               style={{
                 width: "100%",
                 padding: "10px 12px",
@@ -170,14 +164,14 @@ export default function RegisterPage({ onSwitchToLogin }) {
             onMouseOver={(e) => !loading && (e.currentTarget.style.background = PRIMARY_HOVER)}
             onMouseOut={(e) => (e.currentTarget.style.background = PRIMARY)}
           >
-            {loading ? "Creating account..." : "Create account"}
+            {loading ? "Signing in..." : "Sign in"}
           </button>
         </form>
 
         <div style={{ marginTop: 20, textAlign: "center", fontSize: 13, color: "#6B7280" }}>
-          Already have an account?{" "}
+          Don't have an account?{" "}
           <button
-            onClick={onSwitchToLogin}
+            onClick={onSwitchToRegister}
             style={{
               background: "none",
               border: "none",
@@ -187,7 +181,7 @@ export default function RegisterPage({ onSwitchToLogin }) {
               fontSize: 13,
             }}
           >
-            Sign in
+            Sign up
           </button>
         </div>
       </div>

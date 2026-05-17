@@ -260,6 +260,19 @@ app.get("/api/userchats", requireAuth, async (req, res) => {
   }
 });
 
+/* ==== DELETE CHAT ==== */
+app.delete("/api/chats/:chatId", requireAuth, async (req, res) => {
+  const tokenUserId = req.userId;
+  try {
+    await Chat.findByIdAndDelete(req.params.chatId);
+    await UserChat.deleteOne({ chatId: req.params.chatId, userId: tokenUserId });
+    res.status(200).json({ message: "Chat deleted successfully" });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: "Error deleting chat" });
+  }
+});
+
 app.listen(port, () => {
   connect();
   console.log(`🚀 Server running on port ${port}`);

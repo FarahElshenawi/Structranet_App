@@ -40,6 +40,7 @@ from structranet.utils import _build_design_review
 from structranet.generation.preflight import check_topology_compatibility
 from structranet.core.session import Session, SessionStore
 from structranet.core.thought_parser import parse_thinking_text
+from structranet.constants.appliances import APPLIANCE_CATALOG
 
 logger = logging.getLogger("structranet.pipeline_runner")
 
@@ -121,9 +122,60 @@ def build_requirements_json(
     topology_dict: Dict[str, Any],
     template_image_map: Dict[str, str],
 ) -> List[RequiredAppliance]:
+    """Build the requirements list for each node in the topology.
+
+    Image filename resolution order:
+      1. User's profile template_image_map (explicit override)
+      2. APPLIANCE_CATALOG default image for the template
+      3. None (status="missing") if neither source has an image
+
+    This ensures that the requirements JSON always contains the correct
+    default image filename (e.g. "c7200-adventerprisek9-mz.124-24.T5.image"
+    for Cisco 7200) even when the user hasn't configured a custom image map.
+    """
     topo = topology_dict.get("topology", {})
     nodes = topo.get("nodes", [])
     result: List[RequiredAppliance] = []
+
+    def _resolve_image(template: str, node_type: str) -> Optional[str]:
+        """Resolve the image filename for a template.
+
+        Priority:
+          1. User-provided template_image_map (from profile)
+          2. APPLIANCE_CATALOG default for this template
+
+        Different node types store the image under different keys:
+          - dynamips: "image"  (e.g. c7200-adventerprisek9-mz.124-24.T5.image)
+          - iou:      "path"   (e.g. /opt/gns3/images/i86bi-linux-l3-...)
+          - qemu:     "hda_disk_image" (e.g. csr1000v-universalk9-serial.qcow2)
+          - docker:   "image"  (e.g. alpine:latest)
+        """
+        # 1. User override takes priority
+        user_image = template_image_map.get(template)
+        if user_image:
+            return user_image
+
+        # 2. Fall back to APPLIANCE_CATALOG default
+        catalog_entry = APPLIANCE_CATALOG.get(template, {})
+        if not catalog_entry:
+            return None
+
+        # Look up the right key based on node_type
+        if node_type == "dynamips":
+            return catalog_entry.get("image")
+        elif node_type == "iou":
+            return catalog_entry.get("path")
+        elif node_type == "qemu":
+            return catalog_entry.get("hda_disk_image")
+        elif node_type == "docker":
+            return catalog_entry.get("image")
+        else:
+            # Generic fallback — try all known image keys
+            return (
+                catalog_entry.get("image")
+                or catalog_entry.get("hda_disk_image")
+                or catalog_entry.get("path")
+            )
 
     for node in nodes:
         nid = node.get("node_id", "?")
@@ -138,7 +190,7 @@ def build_requirements_json(
                 image_required=False, image_file=None, status="builtin",
             ))
         elif ntype in _APPLIANCE_NODE_TYPES:
-            image_file = template_image_map.get(template)
+            image_file = _resolve_image(template, ntype)
             cat = _EMULATOR_CATEGORY.get(ntype, "qemu")
             result.append(RequiredAppliance(
                 node_id=nid, name=name, node_type=ntype,
@@ -545,7 +597,7 @@ async def run_phase2_and_export(
     session.sub_phase = None
 
     complete_data = ExportResponse(
-        download_url=f"/api/sessions/{session.session_id}/download",
+        download_url=f"/sessions/{session.session_id}/download",
         validator_passed=session.validator_passed,
         file_size_bytes=file_size,
         node_count=len(nodes_list),

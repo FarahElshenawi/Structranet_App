@@ -11,6 +11,7 @@ import {
   createSession, startGeneration, editAndRegenerate, approveTopology,
   downloadGns3, downloadConfigsZip, downloadRequirements,
   getChats, createChat, deleteChat, updateChatSessionId,
+  checkBackendConnection,
 } from "../lib/api";
 
 const PRIMARY = "#166534";
@@ -53,108 +54,6 @@ const PILL_CATEGORIES = [
   },
 ];
 
-// ── Mini SVG Topology Preview ─────────────────────────────────────────────────
-function computeMiniLayout(nodes) {
-  const RING_RADII = { router: 55, firewall: 85, switch: 110, host: 140 };
-  const CX = 200, CY = 110;
-  const groups = {};
-  for (const n of nodes) {
-    const t = n.node_type || "host";
-    if (!groups[t]) groups[t] = [];
-    groups[t].push(n);
-  }
-  const positions = {};
-  const typeOrder = ["router", "firewall", "switch", "host"];
-  for (const type of typeOrder) {
-    const group = groups[type] || [];
-    const radius = RING_RADII[type] || 140;
-    const count = group.length;
-    for (let i = 0; i < count; i++) {
-      const angle = (2 * Math.PI * i) / Math.max(count, 1) - Math.PI / 2;
-      const nodeId = group[i].node_id;
-      positions[nodeId] = {
-        x: Math.round(CX + radius * Math.cos(angle)),
-        y: Math.round(CY + radius * Math.sin(angle)),
-      };
-    }
-  }
-  return positions;
-}
-
-function MiniTopologyPreview({ topology }) {
-  const nodes = topology?.nodes || [];
-  const links = topology?.links || [];
-  const positions = useMemo(() => computeMiniLayout(nodes), [nodes]);
-
-  const nodeAbbr = (type) => ({ router: "R", switch: "SW", host: "PC", firewall: "FW", docker: "DK" }[type] || "N");
-
-  const nodeColors = {
-    router:  { fill: "rgba(22,101,52,0.10)", stroke: "rgba(22,101,52,0.50)", text: "#166534" },
-    switch:  { fill: "rgba(59,130,246,0.08)", stroke: "rgba(59,130,246,0.40)", text: "#1D4ED8" },
-    host:    { fill: "rgba(107,114,128,0.07)", stroke: "rgba(107,114,128,0.30)", text: "#374151" },
-    firewall:{ fill: "rgba(234,88,12,0.08)", stroke: "rgba(234,88,12,0.40)", text: "#C2410C" },
-    docker:  { fill: "rgba(99,102,241,0.08)", stroke: "rgba(99,102,241,0.40)", text: "#4338CA" },
-  };
-
-  return (
-    <svg width="100%" height={240} viewBox="0 0 400 220" style={{ display: "block", background: "#FAFAFA", borderRadius: 8 }}>
-      {/* Links */}
-      {links.map((l, i) => {
-        const a = positions[l.from_node] || { x: 0, y: 0 };
-        const b = positions[l.to_node] || { x: 0, y: 0 };
-        return (
-          <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="rgba(22,101,52,0.22)" strokeWidth={1.5} />
-        );
-      })}
-      {/* Nodes */}
-      {nodes.map((n) => {
-        const pos = positions[n.node_id] || { x: 0, y: 0 };
-        const t = n.node_type || "host";
-        const colors = nodeColors[t] || nodeColors.host;
-        const w = t === "switch" ? 44 : t === "host" ? 36 : t === "firewall" ? 44 : 48;
-        const h = t === "host" ? 22 : 28;
-        return (
-          <g key={n.node_id}>
-            <rect
-              x={pos.x - w / 2}
-              y={pos.y - h / 2}
-              width={w}
-              height={h}
-              rx={4}
-              fill={colors.fill}
-              stroke={colors.stroke}
-              strokeWidth={1}
-            />
-            <text
-              x={pos.x}
-              y={pos.y - 1}
-              textAnchor="middle"
-              dominantBaseline="middle"
-              fontSize="10"
-              fontWeight="700"
-              fill={colors.text}
-              fontFamily="monospace"
-            >
-              {nodeAbbr(t)}
-            </text>
-            <text
-              x={pos.x}
-              y={pos.y + h / 2 + 11}
-              textAnchor="middle"
-              fontSize="9"
-              fontWeight="500"
-              fill="#6B7280"
-              fontFamily="'Geist', system-ui, sans-serif"
-            >
-              {n.name}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
-
 // ── Blinking cursor component ─────────────────────────────────────────────────
 function BlinkingCursor() {
   return (
@@ -169,6 +68,249 @@ function BlinkingCursor() {
     }}>
       <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }`}</style>
     </span>
+  );
+}
+
+// ── Requirements Panel — shows devices with image filenames ───────────────────
+// Image filenames come from: profile first, then appliance.py defaults
+function RequirementsPanelInline({ requirements }) {
+  if (!requirements || requirements.length === 0) return null;
+
+  // Group by template_name for a compact display
+  const grouped = {};
+  for (const req of requirements) {
+    const key = req.template_name || req.node_type || "unknown";
+    if (!grouped[key]) {
+      grouped[key] = {
+        template_name: req.template_name,
+        node_type: req.node_type,
+        category: req.category,
+        image_required: req.image_required,
+        image_file: req.image_file,
+        status: req.status,
+        count: 0,
+        names: [],
+      };
+    }
+    grouped[key].count++;
+    grouped[key].names.push(req.name);
+  }
+
+  const entries = Object.values(grouped);
+
+  return (
+    <div style={{
+      border: `1px solid ${BORDER}`,
+      borderRadius: 10,
+      background: "white",
+      overflow: "hidden",
+    }}>
+      <div style={{
+        padding: "10px 14px",
+        borderBottom: `1px solid ${BORDER}`,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        background: "#FAFAFA",
+      }}>
+        <Icon d={PATHS.box} size={14} style={{ color: PRIMARY }} />
+        <span style={{ fontSize: 13, fontWeight: 600, color: "#111" }}>Appliance Requirements</span>
+        <span style={{ fontSize: 11, color: "#6B7280", marginLeft: 4 }}>
+          {requirements.length} device{requirements.length !== 1 ? "s" : ""}
+        </span>
+      </div>
+      <div style={{ padding: "8px 0" }}>
+        {entries.map((entry, i) => (
+          <div
+            key={i}
+            style={{
+              padding: "8px 14px",
+              borderBottom: i < entries.length - 1 ? `1px solid ${BORDER}` : "none",
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 10,
+            }}
+          >
+            {/* Status dot */}
+            <div style={{
+              width: 8, height: 8, borderRadius: "50%", flexShrink: 0, marginTop: 5,
+              background: entry.status === "ok" ? "#22C55E" : entry.status === "missing" ? "#EF4444" : "#9CA3AF",
+            }} />
+
+            <div style={{ flex: 1, minWidth: 0 }}>
+              {/* Template name + count */}
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#111", fontFamily: "monospace" }}>
+                  {entry.template_name}
+                </span>
+                <span style={{
+                  fontSize: 11, fontWeight: 500, color: "#6B7280",
+                  background: MUTED, borderRadius: 4, padding: "1px 6px",
+                }}>
+                  x{entry.count}
+                </span>
+                <span style={{
+                  fontSize: 10, fontWeight: 500, color: "#9CA3AF",
+                  textTransform: "uppercase", letterSpacing: "0.04em",
+                }}>
+                  {entry.category}
+                </span>
+              </div>
+
+              {/* Device names */}
+              <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>
+                {entry.names.join(", ")}
+              </div>
+
+              {/* Image filename — from profile or appliance.py defaults */}
+              {entry.image_required && (
+                <div style={{ marginTop: 4 }}>
+                  {entry.image_file ? (
+                    <div style={{
+                      fontSize: 11,
+                      color: "#166534",
+                      fontFamily: "monospace",
+                      background: "rgba(22,101,52,0.06)",
+                      padding: "3px 8px",
+                      borderRadius: 4,
+                      border: "1px solid rgba(22,101,52,0.12)",
+                      wordBreak: "break-all",
+                      lineHeight: 1.4,
+                    }}>
+                      {entry.image_file}
+                    </div>
+                  ) : (
+                    <div style={{
+                      fontSize: 11,
+                      color: "#DC2626",
+                      fontFamily: "monospace",
+                      background: "#FEF2F2",
+                      padding: "3px 8px",
+                      borderRadius: 4,
+                      border: "1px solid #FECACA",
+                    }}>
+                      Image not configured — set in profile or appliance defaults
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!entry.image_required && (
+                <div style={{ fontSize: 11, color: "#9CA3AF", marginTop: 2 }}>
+                  Built-in — no image required
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Summary Panel ─────────────────────────────────────────────────────────────
+function SummaryPanelInline({ summary }) {
+  if (!summary) return null;
+
+  return (
+    <div style={{
+      border: `1px solid ${BORDER}`,
+      borderRadius: 10,
+      background: "white",
+      overflow: "hidden",
+    }}>
+      {/* Design review */}
+      {summary.design_review && summary.design_review.length > 0 && (
+        <div>
+          <div style={{
+            padding: "10px 14px",
+            borderBottom: `1px solid ${BORDER}`,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            background: "#FAFAFA",
+          }}>
+            <Icon d={PATHS.check} size={14} style={{ color: PRIMARY }} />
+            <span style={{ fontSize: 13, fontWeight: 600, color: "#111" }}>Design Review</span>
+          </div>
+          <div style={{ padding: "10px 14px" }}>
+            {summary.design_review.map((item, i) => (
+              <div key={i} style={{ fontSize: 13, color: "#374151", lineHeight: 1.6, marginBottom: 4 }}>
+                {item}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Assumptions */}
+      {summary.assumptions && summary.assumptions.length > 0 && (
+        <div>
+          <div style={{
+            padding: "10px 14px",
+            borderBottom: `1px solid ${BORDER}`,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            background: "#FAFAFA",
+          }}>
+            <Icon d={PATHS.info} size={14} style={{ color: "#D97706" }} />
+            <span style={{ fontSize: 13, fontWeight: 600, color: "#111" }}>Assumptions</span>
+          </div>
+          <div style={{ padding: "10px 14px" }}>
+            {summary.assumptions.map((item, i) => (
+              <div key={i} style={{ fontSize: 13, color: "#6B7280", lineHeight: 1.6, marginBottom: 4 }}>
+                {item}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Download Card ─────────────────────────────────────────────────────────────
+function DownloadCard({ icon, title, subtitle, onDownload }) {
+  return (
+    <button
+      onClick={onDownload}
+      style={{
+        border: `1px solid ${BORDER}`,
+        borderRadius: 10,
+        background: "white",
+        padding: "12px 16px",
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        cursor: "pointer",
+        width: "100%",
+        textAlign: "left",
+        transition: "all .15s",
+      }}
+      onMouseOver={(e) => {
+        e.currentTarget.style.borderColor = PRIMARY;
+        e.currentTarget.style.background = "rgba(22,101,52,0.02)";
+      }}
+      onMouseOut={(e) => {
+        e.currentTarget.style.borderColor = BORDER;
+        e.currentTarget.style.background = "white";
+      }}
+    >
+      <div style={{
+        width: 40, height: 40, borderRadius: 8,
+        background: "rgba(22,101,52,0.06)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        flexShrink: 0,
+      }}>
+        <Icon d={icon === "box" ? PATHS.box : PATHS.file} size={18} style={{ color: PRIMARY }} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "#111" }}>{title}</div>
+        <div style={{ fontSize: 12, color: "#6B7280" }}>{subtitle}</div>
+      </div>
+      <Icon d={PATHS.download} size={16} style={{ color: "#9CA3AF", flexShrink: 0 }} />
+    </button>
   );
 }
 
@@ -191,6 +333,7 @@ export default function ChatPage() {
   const [editText, setEditText] = useState("");
   const [profile, setProfile] = useState(null);
   const [expandedPill, setExpandedPill] = useState(null);
+  const [backendStatus, setBackendStatus] = useState({ checked: false, express: false, fastapi: false });
 
   const messagesEndRef = useRef(null);
   const chatInputRef = useRef(null);
@@ -198,19 +341,22 @@ export default function ChatPage() {
   // ── Derived state ─────────────────────────────────────────────────────────
   const isStreaming = status === "streaming";
   const isComplete = status === "complete";
-  const isReview = phase?.phase === "review" && isComplete;
+  const isReview = phase?.phase === "review";
   const isExporting = phase?.phase === "exporting" && isStreaming;
   const isSuccess = phase?.phase === "success" && isComplete;
   const isError = phase?.phase === "error";
-  const isConfigStreaming = (phase?.phase === "exporting" || phase?.sub_phase === "generating_configs") && isStreaming;
+  const isConfigStreaming = (phase?.phase === "exporting" || phase?.sub_phase === "streaming_configs" || phase?.sub_phase === "generating_configs") && isStreaming;
   const hasTopology = topology != null;
 
   // Determine which phase we are in for display
   const isPhase1Streaming = isStreaming && (phase?.phase === "generating" || phase?.phase === "review") && !isConfigStreaming;
   const isPhase2Streaming = isStreaming && isConfigStreaming;
 
-  // ── Load chat history on mount ────────────────────────────────────────────
+  // ── Check backend connectivity on mount ──────────────────────────────────
   useEffect(() => {
+    checkBackendConnection().then((s) => {
+      setBackendStatus({ checked: true, ...s });
+    });
     getChats().then(setHistory).catch(() => {});
   }, []);
 
@@ -244,6 +390,8 @@ export default function ChatPage() {
             supports_iou: profile.features?.iou || false,
             supports_qemu: profile.features?.qemu || true,
             supports_docker: profile.features?.docker || false,
+            // Pass user's custom image filenames to override appliance catalog defaults
+            template_image_map: profile.images || undefined,
           };
         }
         const session = await createSession(sessionBody.profile || {});
@@ -259,7 +407,6 @@ export default function ChatPage() {
         const chat = await createChat({ text, title: text.slice(0, 60) });
         setChatId(chat._id || chat.id);
         setHistory((prev) => [chat, ...prev]);
-        // Link session to chat
         if (sid && (chat._id || chat.id)) {
           await updateChatSessionId(chat._id || chat.id, sid);
         }
@@ -275,7 +422,6 @@ export default function ChatPage() {
 
   // ── Handle pill suggestion click ──────────────────────────────────────────
   const handleSuggestionClick = (text) => {
-    // Auto-fill the chat input and send
     handleSend(text);
   };
 
@@ -314,41 +460,26 @@ export default function ChatPage() {
 
   const handleDownloadGns3 = async () => {
     if (!sessionId) return;
-    try {
-      await downloadGns3(sessionId, projectName);
-    } catch (err) {
-      setMessages((prev) => [...prev, { role: "error", text: "Download failed: " + err.message }]);
-    }
+    try { await downloadGns3(sessionId, projectName); }
+    catch (err) { setMessages((prev) => [...prev, { role: "error", text: "Download failed: " + err.message }]); }
   };
 
   const handleDownloadConfigs = async () => {
     if (!sessionId) return;
-    try {
-      await downloadConfigsZip(sessionId, projectName);
-    } catch (err) {
-      setMessages((prev) => [...prev, { role: "error", text: "Download failed: " + err.message }]);
-    }
+    try { await downloadConfigsZip(sessionId, projectName); }
+    catch (err) { setMessages((prev) => [...prev, { role: "error", text: "Download failed: " + err.message }]); }
   };
 
   const handleDownloadRequirements = async () => {
     if (!sessionId) return;
-    try {
-      await downloadRequirements(sessionId, projectName);
-    } catch (err) {
-      setMessages((prev) => [...prev, { role: "error", text: "Download failed: " + err.message }]);
-    }
+    try { await downloadRequirements(sessionId, projectName); }
+    catch (err) { setMessages((prev) => [...prev, { role: "error", text: "Download failed: " + err.message }]); }
   };
 
   // ── Select a past chat ────────────────────────────────────────────────────
-  const handleSelectHistory = () => {
-    // Future: load chat messages from backend
-  };
-
+  const handleSelectHistory = () => {};
   const handleDeleteChat = async (id) => {
-    try {
-      await deleteChat(id);
-      setHistory((prev) => prev.filter((c) => (c._id || c.id) !== id));
-    } catch {}
+    try { await deleteChat(id); setHistory((prev) => prev.filter((c) => (c._id || c.id) !== id)); } catch {}
   };
 
   // ── Map thought type to label ─────────────────────────────────────────────
@@ -426,7 +557,6 @@ export default function ChatPage() {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          {/* View Topology — show when topology exists AND topology viewer is NOT open */}
           {hasTopology && !topologyOpen && (
             <button
               onClick={() => setTopologyOpen(true)}
@@ -463,6 +593,44 @@ export default function ChatPage() {
         </div>
       </div>
 
+      {/* ── Connection Status Banner ──────────────────────────────────────── */}
+      {backendStatus.checked && !backendStatus.express && (
+        <div style={{
+          background: "#FEF2F2",
+          borderBottom: "1px solid #FECACA",
+          padding: "8px 16px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 8,
+          fontSize: 13,
+          color: "#DC2626",
+          flexShrink: 0,
+        }}>
+          <Icon d={PATHS.alert} size={14} style={{ color: "#DC2626" }} />
+          <span style={{ fontWeight: 500 }}>Backend server is not running.</span>
+          <span style={{ color: "#991B1B" }}>Start the Express server on port 3000 and the AI engine on port 8000.</span>
+        </div>
+      )}
+      {backendStatus.checked && backendStatus.express && !backendStatus.fastapi && (
+        <div style={{
+          background: "#FFFBEB",
+          borderBottom: "1px solid #FDE68A",
+          padding: "8px 16px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 8,
+          fontSize: 13,
+          color: "#D97706",
+          flexShrink: 0,
+        }}>
+          <Icon d={PATHS.alert} size={14} style={{ color: "#D97706" }} />
+          <span style={{ fontWeight: 500 }}>AI engine is not reachable.</span>
+          <span style={{ color: "#92400E" }}>Start the FastAPI server on port 8000 to generate topologies.</span>
+        </div>
+      )}
+
       {/* ── Main Area ────────────────────────────────────────────────────────── */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {/* Messages / Content */}
@@ -476,7 +644,6 @@ export default function ChatPage() {
               display: "flex", flexDirection: "column", alignItems: "center",
               justifyContent: "center", height: "100%", gap: 16, textAlign: "center",
             }}>
-              {/* NetworkIcon 56px rounded-16 */}
               <div style={{
                 width: 56, height: 56, borderRadius: 16,
                 background: "rgba(22,101,52,0.08)",
@@ -485,13 +652,9 @@ export default function ChatPage() {
               }}>
                 <NetworkIcon size={28} />
               </div>
-
-              {/* Heading */}
               <div style={{ fontSize: 20, fontWeight: 700, color: "#111" }}>
                 What would you like to build?
               </div>
-
-              {/* Subtitle */}
               <div style={{ fontSize: 14, color: "#6B7280", maxWidth: 480, lineHeight: 1.6 }}>
                 Describe a network topology in natural language and I will generate a fully configured GNS3 project for you.
               </div>
@@ -563,12 +726,8 @@ export default function ChatPage() {
                         <button
                           key={i}
                           onClick={() => handleSuggestionClick(suggestion)}
-                          onMouseOver={(e) => {
-                            e.currentTarget.style.background = "rgba(22,101,52,0.06)";
-                          }}
-                          onMouseOut={(e) => {
-                            e.currentTarget.style.background = "transparent";
-                          }}
+                          onMouseOver={(e) => { e.currentTarget.style.background = "rgba(22,101,52,0.06)"; }}
+                          onMouseOut={(e) => { e.currentTarget.style.background = "transparent"; }}
                           style={{
                             border: "none",
                             background: "transparent",
@@ -600,7 +759,6 @@ export default function ChatPage() {
 
               {/* User messages + assistant sections */}
               {messages.map((msg, i) => {
-                // Only render user messages inline; assistant/system/error handled separately
                 if (msg.role === "user") {
                   return (
                     <div key={i} style={{ marginBottom: 16, display: "flex", justifyContent: "flex-end" }}>
@@ -638,14 +796,13 @@ export default function ChatPage() {
               })}
 
               {/* ─── Assistant section with NetworkLoader ─────────────────────── */}
-              {/* Show whenever there's an assistant message placeholder or streaming content */}
               {(messages.some((m) => m.role === "assistant") || isStreaming) && (
                 <div style={{ marginBottom: 16 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
                     <NetworkLoader size={28} />
                   </div>
 
-                  {/* ─── STATE 2: Streaming thoughts (Claude-style) ─────────── */}
+                  {/* ─── STATE 2: Streaming thoughts ─────────── */}
                   {thoughts.length > 0 && (
                     <div style={{ fontSize: 14, color: "#374151", lineHeight: 1.7 }}>
                       {thoughts.map((thought, i) => (
@@ -662,7 +819,7 @@ export default function ChatPage() {
                   )}
 
                   {/* ─── Stream card: Topology JSON snippet ──────────────────── */}
-                  {isStreaming && !isConfigStreaming && (
+                  {isStreaming && phase?.phase === "generating" && (
                     <div style={{
                       border: `1px solid ${BORDER}`,
                       borderRadius: 10,
@@ -717,7 +874,6 @@ export default function ChatPage() {
                     background: "white",
                     overflow: "hidden",
                   }}>
-                    {/* Header */}
                     <div style={{
                       padding: "12px 16px",
                       borderBottom: `1px solid ${BORDER}`,
@@ -753,9 +909,16 @@ export default function ChatPage() {
                       </button>
                     </div>
 
-                    {/* Mini SVG preview */}
-                    <div style={{ padding: 16, display: "flex", justifyContent: "center" }}>
-                      <MiniTopologyPreview topology={topology} />
+                    <div style={{ padding: 16, display: "flex", justifyContent: "center", gap: 24 }}>
+                      {[
+                        { label: "Nodes", value: topology.nodes?.length || 0 },
+                        { label: "Links", value: topology.links?.length || 0 },
+                      ].map(({ label, value }) => (
+                        <div key={label} style={{ textAlign: "center" }}>
+                          <div style={{ fontSize: 28, fontWeight: 700, color: PRIMARY }}>{value}</div>
+                          <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>{label}</div>
+                        </div>
+                      ))}
                     </div>
                   </div>
 
@@ -777,14 +940,8 @@ export default function ChatPage() {
                         gap: 6,
                         transition: "all .15s",
                       }}
-                      onMouseOver={(e) => {
-                        e.currentTarget.style.borderColor = PRIMARY;
-                        e.currentTarget.style.color = PRIMARY;
-                      }}
-                      onMouseOut={(e) => {
-                        e.currentTarget.style.borderColor = BORDER;
-                        e.currentTarget.style.color = "#374151";
-                      }}
+                      onMouseOver={(e) => { e.currentTarget.style.borderColor = PRIMARY; e.currentTarget.style.color = PRIMARY; }}
+                      onMouseOut={(e) => { e.currentTarget.style.borderColor = BORDER; e.currentTarget.style.color = "#374151"; }}
                     >
                       <Icon d={PATHS.pencil} size={15} /> Edit Topology
                     </button>
@@ -804,18 +961,14 @@ export default function ChatPage() {
                         gap: 6,
                         transition: "all .15s",
                       }}
-                      onMouseOver={(e) => {
-                        e.currentTarget.style.background = "#14532D";
-                      }}
-                      onMouseOut={(e) => {
-                        e.currentTarget.style.background = PRIMARY;
-                      }}
+                      onMouseOver={(e) => { e.currentTarget.style.background = "#14532D"; }}
+                      onMouseOut={(e) => { e.currentTarget.style.background = PRIMARY; }}
                     >
                       <Icon d={PATHS.check} size={15} /> Continue
                     </button>
                   </div>
 
-                  {/* Requirements panel */}
+                  {/* Requirements panel — shows image filenames from profile/appliance defaults */}
                   {requirements && requirements.length > 0 && (
                     <div style={{ marginTop: 16 }}>
                       <RequirementsPanelInline requirements={requirements} />
@@ -834,7 +987,6 @@ export default function ChatPage() {
               {/* ─── STATE 4: Config Streaming (Phase 2 after approve) ──────── */}
               {isPhase2Streaming && (
                 <div style={{ marginBottom: 16 }}>
-                  {/* System message: Topology approved */}
                   <div style={{
                     background: "#F0FDF4",
                     border: "1px solid #BBF7D0",
@@ -851,7 +1003,6 @@ export default function ChatPage() {
                     Topology approved. Generating device configurations...
                   </div>
 
-                  {/* Config stream card */}
                   <div style={{
                     border: `1px solid ${BORDER}`,
                     borderRadius: 10,
@@ -890,7 +1041,6 @@ export default function ChatPage() {
               {/* ─── STATE 5: Downloads (complete) ──────────────────────────── */}
               {isSuccess && (
                 <div style={{ marginBottom: 16 }}>
-                  {/* System message: Generating configs approved */}
                   <div style={{
                     background: "#F0FDF4",
                     border: "1px solid #BBF7D0",
@@ -907,7 +1057,6 @@ export default function ChatPage() {
                     Topology approved. Generating device configurations...
                   </div>
 
-                  {/* System message: Ready for download */}
                   <div style={{
                     background: "#F0FDF4",
                     border: "1px solid #BBF7D0",
@@ -924,23 +1073,19 @@ export default function ChatPage() {
                     GNS3 project generated successfully. Ready for download.
                   </div>
 
-                  {/* Download cards */}
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {/* GNS3 Project */}
                     <DownloadCard
                       icon="box"
                       title={`${projectName}.gns3project`}
                       subtitle="GNS3 Project File"
                       onDownload={handleDownloadGns3}
                     />
-                    {/* Configs ZIP */}
                     <DownloadCard
                       icon="box"
                       title={`${projectName}_configs.zip`}
                       subtitle="Device Startup Configurations"
                       onDownload={handleDownloadConfigs}
                     />
-                    {/* Requirements JSON */}
                     <DownloadCard
                       icon="file"
                       title={`${projectName}_requirements.json`}
@@ -996,39 +1141,40 @@ export default function ChatPage() {
                   <div style={{
                     border: `1px solid ${PRIMARY}`,
                     borderRadius: 10,
+                    background: "white",
                     overflow: "hidden",
                   }}>
                     <div style={{
-                      background: "rgba(22,101,52,0.05)",
-                      padding: "8px 14px",
+                      padding: "10px 14px",
+                      borderBottom: `1px solid ${BORDER}`,
                       display: "flex",
                       alignItems: "center",
-                      gap: 6,
-                      borderBottom: "1px solid rgba(22,101,52,0.15)",
+                      gap: 8,
+                      background: "rgba(22,101,52,0.03)",
                     }}>
-                      <Icon d={PATHS.pencil} size={13} style={{ color: PRIMARY }} />
-                      <span style={{ fontSize: 12, fontWeight: 600, color: PRIMARY }}>Edit Topology</span>
+                      <Icon d={PATHS.pencil} size={14} style={{ color: PRIMARY }} />
+                      <span style={{ fontSize: 13, fontWeight: 600, color: PRIMARY }}>Edit Topology</span>
                     </div>
                     <div style={{ padding: 12 }}>
                       <textarea
                         value={editText}
                         onChange={(e) => setEditText(e.target.value)}
-                        placeholder="Describe what you want to change... (e.g., 'Add a second firewall for redundancy' or 'Change VLAN 30 to VLAN 40')"
+                        placeholder="Describe how you want to modify the topology..."
                         style={{
                           width: "100%",
+                          minHeight: 80,
                           border: `1px solid ${BORDER}`,
                           borderRadius: 8,
-                          padding: "10px 12px",
+                          padding: 10,
                           fontSize: 14,
+                          fontFamily: "'Geist', system-ui, sans-serif",
+                          resize: "vertical",
                           outline: "none",
-                          resize: "none",
-                          fontFamily: "inherit",
-                          color: "#111",
-                          minHeight: 80,
-                          boxSizing: "border-box",
                         }}
+                        onFocus={(e) => { e.target.style.borderColor = PRIMARY; }}
+                        onBlur={(e) => { e.target.style.borderColor = BORDER; }}
                       />
-                      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+                      <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
                         <button
                           onClick={() => setEditMode(false)}
                           style={{
@@ -1048,16 +1194,16 @@ export default function ChatPage() {
                           disabled={!editText.trim()}
                           style={{
                             border: "none",
-                            background: editText.trim() ? PRIMARY : "#E5E7EB",
-                            color: editText.trim() ? "white" : "#9CA3AF",
+                            background: editText.trim() ? PRIMARY : "#D1D5DB",
                             borderRadius: 8,
                             padding: "7px 14px",
                             fontSize: 13,
                             fontWeight: 600,
+                            color: "white",
                             cursor: editText.trim() ? "pointer" : "not-allowed",
                           }}
                         >
-                          Regenerate
+                          Submit Edit
                         </button>
                       </div>
                     </div>
@@ -1070,37 +1216,30 @@ export default function ChatPage() {
           )}
         </div>
 
-        {/* ── Input Area ────────────────────────────────────────────────────── */}
-        <div style={{
-          padding: "16px 24px 20px",
-          background: "white",
-          borderTop: `1px solid ${BORDER}`,
-        }}>
-          <div style={{ maxWidth: 700, marginLeft: "auto", marginRight: "auto" }}>
-            <ChatInput onSend={handleSend} disabled={isStreaming} />
-          </div>
-        </div>
+        {/* ── Chat Input ──────────────────────────────────────────────────── */}
+        <ChatInput
+          ref={chatInputRef}
+          onSend={handleSend}
+          disabled={isStreaming || editMode}
+          placeholder={
+            isStreaming
+              ? "Generating topology..."
+              : "Describe a network topology..."
+          }
+        />
       </div>
 
-      {/* ── Sidebar ────────────────────────────────────────────────────────── */}
-      <Sidebar
-        open={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
-        onNewChat={handleNewChat}
-        history={history}
-        onSelectHistory={handleSelectHistory}
-        onDeleteChat={handleDeleteChat}
-        onOpenProfile={() => setProfileOpen(true)}
-        onLogout={logout}
-        user={user}
-      />
-
-      {/* ── Topology Viewer (fullscreen overlay) ───────────────────────────── */}
-      {topologyOpen && topology && (
+      {/* ── TopologyViewer overlay ─────────────────────────────────────────── */}
+      {topologyOpen && hasTopology && (
         <TopologyViewer
           topology={topology}
+          requirements={requirements}
           onClose={() => setTopologyOpen(false)}
-          onEdit={() => { setTopologyOpen(false); setEditMode(true); setEditText(""); }}
+          onEdit={() => {
+            setTopologyOpen(false);
+            setEditMode(true);
+            setEditText("");
+          }}
           onApprove={handleApprove}
           isReview={isReview}
         />
@@ -1109,224 +1248,22 @@ export default function ChatPage() {
       {/* ── Profile Drawer ─────────────────────────────────────────────────── */}
       {profileOpen && (
         <ProfileDrawer
-          onClose={() => setProfileOpen(false)}
           profile={profile}
-          onSave={setProfile}
+          onUpdate={(p) => setProfile(p)}
+          onClose={() => setProfileOpen(false)}
         />
       )}
 
-      {/* ── Global keyframe styles ─────────────────────────────────────────── */}
-      <style>{`
-        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
-      `}</style>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Inline Requirements Panel (same data, rendered inline in chat flow)
-// ═══════════════════════════════════════════════════════════════════════════════
-function RequirementsPanelInline({ requirements = [] }) {
-  if (requirements.length === 0) return null;
-
-  return (
-    <div style={{
-      border: `1px solid ${BORDER}`,
-      borderRadius: 10,
-      overflow: "hidden",
-      fontFamily: "'Geist', system-ui, sans-serif",
-    }}>
-      <div style={{
-        background: "white",
-        padding: "12px 16px",
-        borderBottom: `1px solid ${BORDER}`,
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-      }}>
-        <Icon d={PATHS.shield} size={14} style={{ color: PRIMARY }} />
-        <span style={{ fontSize: 13, fontWeight: 600, color: "#111" }}>Requirements Manifest</span>
-      </div>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-        <thead>
-          <tr style={{ background: MUTED }}>
-            {["CATEGORY", "APPLIANCE", "IMAGE", "STATUS"].map((h) => (
-              <th key={h} style={{
-                padding: "8px 14px",
-                textAlign: "left",
-                fontWeight: 600,
-                color: "#6B7280",
-                fontSize: 10,
-                letterSpacing: "0.05em",
-              }}>
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {requirements.map((req, i) => {
-            const statusOk = req.status === "ok";
-            const statusBuiltin = req.status === "builtin";
-            return (
-              <tr key={req.node_id || i} style={{ borderBottom: i < requirements.length - 1 ? `1px solid ${BORDER}` : "none" }}>
-                <td style={{ padding: "10px 14px", color: "#374151", fontFamily: "monospace", fontSize: 11 }}>{req.category}</td>
-                <td style={{ padding: "10px 14px", color: "#111", fontWeight: 500 }}>{req.name}</td>
-                <td style={{ padding: "10px 14px", color: "#6B7280", fontFamily: "monospace", fontSize: 10, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {req.image_file || (statusBuiltin ? "Built-in" : "Required")}
-                </td>
-                <td style={{ padding: "10px 14px" }}>
-                  {statusOk || statusBuiltin ? (
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: PRIMARY, fontWeight: 500 }}>
-                      <Icon d={PATHS.check} size={12} /> {statusBuiltin ? "Built-in" : "Installed"}
-                    </span>
-                  ) : (
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: "#DC2626", fontWeight: 500 }}>
-                      <Icon d={PATHS.alert} size={12} /> Missing
-                    </span>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Inline Summary Panel (same data, rendered inline in chat flow)
-// ═══════════════════════════════════════════════════════════════════════════════
-function SummaryPanelInline({ summary }) {
-  if (!summary) return null;
-
-  const hasReview = summary.design_review && summary.design_review.length > 0;
-  const hasAssumptions = summary.assumptions && summary.assumptions.length > 0;
-
-  return (
-    <div style={{
-      border: `1px solid ${BORDER}`,
-      borderRadius: 10,
-      overflow: "hidden",
-      fontFamily: "'Geist', system-ui, sans-serif",
-    }}>
-      <div style={{
-        background: "white",
-        padding: "12px 16px",
-        borderBottom: `1px solid ${BORDER}`,
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-      }}>
-        <Icon d={PATHS.sparkles} size={14} style={{ color: PRIMARY }} />
-        <span style={{ fontSize: 13, fontWeight: 600, color: "#111" }}>AI Design Review</span>
-      </div>
-      {hasReview && (
-        <div style={{ background: "white", padding: "12px 16px", borderBottom: `1px solid ${BORDER}` }}>
-          <div style={{ fontSize: 10, fontWeight: 600, color: "#6B7280", letterSpacing: "0.05em", marginBottom: 8 }}>DESIGN REVIEW</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {summary.design_review.map((item, i) => (
-              <div key={i} style={{
-                display: "flex", alignItems: "flex-start", gap: 8,
-                padding: "8px 10px", background: "#F0FDF4", borderRadius: 6, border: "1px solid #BBF7D0",
-              }}>
-                <Icon d={PATHS.check} size={12} style={{ color: PRIMARY, flexShrink: 0, marginTop: 2 }} />
-                <span style={{ fontSize: 12, color: "#374151", lineHeight: 1.5 }}>{item}</span>
-              </div>
-            ))}
-          </div>
-        </div>
+      {/* ── Sidebar ────────────────────────────────────────────────────────── */}
+      {sidebarOpen && (
+        <Sidebar
+          history={history}
+          onSelect={handleSelectHistory}
+          onDelete={handleDeleteChat}
+          onNewChat={handleNewChat}
+          onClose={() => setSidebarOpen(false)}
+        />
       )}
-      {hasAssumptions && (
-        <div style={{ background: "white", padding: "12px 16px" }}>
-          <div style={{ fontSize: 10, fontWeight: 600, color: "#6B7280", letterSpacing: "0.05em", marginBottom: 8 }}>ASSUMPTIONS</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {summary.assumptions.map((item, i) => (
-              <div key={i} style={{
-                display: "flex", alignItems: "flex-start", gap: 8,
-                padding: "8px 10px", background: "#FFFBEB", borderRadius: 6, border: "1px solid #FDE68A",
-              }}>
-                <Icon d={PATHS.alert} size={12} style={{ color: "#D97706", flexShrink: 0, marginTop: 2 }} />
-                <span style={{ fontSize: 12, color: "#92400E", lineHeight: 1.5 }}>{item}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Download Card Component
-// ═══════════════════════════════════════════════════════════════════════════════
-function DownloadCard({ icon, title, subtitle, onDownload }) {
-  const [loading, setLoading] = useState(false);
-
-  const handleClick = async () => {
-    setLoading(true);
-    try {
-      await onDownload();
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const iconPath = icon === "box" ? PATHS.box : PATHS.file;
-
-  return (
-    <div style={{
-      border: `1px solid ${BORDER}`,
-      borderRadius: 10,
-      background: "white",
-      padding: "12px 16px",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: 12,
-    }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <div style={{
-          width: 36,
-          height: 36,
-          borderRadius: 8,
-          background: MUTED,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "#6B7280",
-          flexShrink: 0,
-        }}>
-          <Icon d={iconPath} size={18} />
-        </div>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "#111", fontFamily: "monospace" }}>{title}</div>
-          <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>{subtitle}</div>
-        </div>
-      </div>
-      <button
-        onClick={handleClick}
-        disabled={loading}
-        style={{
-          border: `1px solid ${PRIMARY}`,
-          background: "white",
-          borderRadius: 8,
-          padding: "6px 14px",
-          fontSize: 12,
-          fontWeight: 600,
-          color: PRIMARY,
-          cursor: loading ? "not-allowed" : "pointer",
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          flexShrink: 0,
-          opacity: loading ? 0.6 : 1,
-        }}
-      >
-        <Icon d={PATHS.download} size={13} />
-        {loading ? "Downloading..." : "Download"}
-      </button>
     </div>
   );
 }

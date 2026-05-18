@@ -112,7 +112,7 @@ def _profile_input_to_preflight(data: Dict[str, Any]) -> PreflightProfile:
 #  Health
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.get("/api/health")
+@app.get("/health")
 async def health():
     return {"status": "ok", "version": "1.0.0"}
 
@@ -121,7 +121,7 @@ async def health():
 #  Catalog
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.get("/api/catalog")
+@app.get("/catalog")
 async def get_catalog(path: str | None = None):
     catalog = load_catalog(path)
     inventory = catalog_to_inventory(catalog)
@@ -140,7 +140,7 @@ async def get_catalog(path: str | None = None):
 #  Sessions
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.post("/api/sessions", status_code=201)
+@app.post("/sessions", status_code=201)
 async def create_session(body: CreateSessionRequest):
     catalog = load_catalog(body.catalog_path)
     inventory = catalog_to_inventory(catalog)
@@ -180,7 +180,7 @@ async def create_session(body: CreateSessionRequest):
     )
 
 
-@app.get("/api/sessions/{session_id}")
+@app.get("/sessions/{session_id}")
 async def get_session(session_id: str):
     session = await _get_session(session_id)
     return SessionStatus(
@@ -197,7 +197,7 @@ async def get_session(session_id: str):
     )
 
 
-@app.delete("/api/sessions/{session_id}")
+@app.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
     deleted = await store.delete(session_id)
     if not deleted:
@@ -209,7 +209,7 @@ async def delete_session(session_id: str):
 #  Generation
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.post("/api/sessions/{session_id}/generate", status_code=202)
+@app.post("/sessions/{session_id}/generate", status_code=202)
 async def start_generation(
     session_id: str,
     body: GenerateRequest,
@@ -232,7 +232,7 @@ async def start_generation(
     return {"status": "started", "session_id": session_id}
 
 
-@app.post("/api/sessions/{session_id}/edit", status_code=202)
+@app.post("/sessions/{session_id}/edit", status_code=202)
 async def edit_topology(
     session_id: str,
     body: EditRequest,
@@ -258,7 +258,7 @@ async def edit_topology(
     return {"status": "started", "session_id": session_id}
 
 
-@app.post("/api/sessions/{session_id}/approve", status_code=202)
+@app.post("/sessions/{session_id}/approve", status_code=202)
 async def approve_topology(
     session_id: str,
     background_tasks: BackgroundTasks,
@@ -277,7 +277,7 @@ async def approve_topology(
 #  SSE Events
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.get("/api/sessions/{session_id}/events")
+@app.get("/sessions/{session_id}/events")
 async def session_events(session_id: str):
     session = await _get_session(session_id)
     queue = store.subscribe(session)
@@ -310,7 +310,7 @@ async def session_events(session_id: str):
 #  Data endpoints
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.get("/api/sessions/{session_id}/topology")
+@app.get("/sessions/{session_id}/topology")
 async def get_topology(session_id: str):
     session = await _get_session(session_id)
     if session.topology_data is None:
@@ -318,7 +318,7 @@ async def get_topology(session_id: str):
     return session.topology_data
 
 
-@app.get("/api/sessions/{session_id}/requirements")
+@app.get("/sessions/{session_id}/requirements")
 async def get_requirements(session_id: str):
     session = await _get_session(session_id)
     return session.requirements
@@ -328,7 +328,7 @@ async def get_requirements(session_id: str):
 #  Downloads
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.get("/api/sessions/{session_id}/download")
+@app.get("/sessions/{session_id}/download")
 async def download_gns3project(session_id: str):
     session = await _get_session(session_id)
     if session.gns3project_path is None:
@@ -345,7 +345,7 @@ async def download_gns3project(session_id: str):
     )
 
 
-@app.get("/api/sessions/{session_id}/download/json")
+@app.get("/sessions/{session_id}/download/json")
 async def download_final_json(session_id: str):
     session = await _get_session(session_id)
     final_file = Path(session.output_dir) / "final_topology.json"
@@ -363,7 +363,7 @@ async def download_final_json(session_id: str):
     )
 
 
-@app.get("/api/sessions/{session_id}/download/configs")
+@app.get("/sessions/{session_id}/download/configs")
 async def download_configs_zip(session_id: str):
     """Download all device configurations as a ZIP file.
 
@@ -406,7 +406,7 @@ async def download_configs_zip(session_id: str):
     )
 
 
-@app.get("/api/sessions/{session_id}/download/requirements")
+@app.get("/sessions/{session_id}/download/requirements")
 async def download_requirements_json(session_id: str):
     """Download appliance requirements as a JSON file.
 

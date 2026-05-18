@@ -28,16 +28,45 @@ async function request(url, options = {}) {
       headers: { "Content-Type": "application/json", ...authHeaders(), ...options.headers },
     });
   } catch (networkErr) {
+    // Network error — backend is not reachable
     throw new Error(
-      `Cannot reach server at ${url}. Make sure the backend is running.\n` +
-      `Original error: ${networkErr.message}`
+      "Unable to connect to the server. Please make sure both the Express backend (port 3000) " +
+      "and the AI engine (port 8000) are running."
     );
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     // Express backend uses { error: "..." }, FastAPI uses { detail: "..." }
-    const msg = body.error || body.detail || body.message || `HTTP ${res.status}`;
-    throw new Error(msg);
+    const rawMsg = body.error || body.detail || body.message || "";
+
+    // Translate common HTTP status codes into user-friendly messages
+    if (res.status === 401) {
+      throw new Error("Session expired. Please sign in again.");
+    }
+    if (res.status === 404) {
+      // Differentiate API 404 from route-not-found
+      if (rawMsg) {
+        throw new Error(rawMsg);
+      }
+      throw new Error(
+        "The requested resource was not found. Please ensure the backend server is running on port 3000."
+      );
+    }
+    if (res.status === 500) {
+      throw new Error(
+        rawMsg
+          ? `Server error: ${rawMsg}. Check the backend console for details.`
+          : "Internal server error. The AI engine may not be configured correctly. Check that the API key is set and the AI engine is running on port 8000."
+      );
+    }
+    if (res.status === 502 || res.status === 503) {
+      throw new Error(
+        "The AI engine is unavailable. Please make sure the FastAPI server is running on port 8000."
+      );
+    }
+
+    // Generic fallback
+    throw new Error(rawMsg || `Request failed with status ${res.status}`);
   }
   return res.json();
 }
@@ -298,5 +327,28 @@ export async function getCatalog(catalogPath) {
 // ── Health ──────────────────────────────────────────────────────────────────
 
 export async function healthCheck() {
-  return request("/api/health");
+  try {
+    const res = await fetch("/api/health", { method: "GET" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ── Backend connectivity check (lightweight, no auth needed) ────────────────
+
+export async function checkBackendConnection() {
+  try {
+    const res = await fetch("/api/health", { method: "GET", signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return { connected: false, express: false, fastapi: false };
+    // Express is up — check FastAPI via the AI health endpoint
+    try {
+      const aiRes = await fetch("/api/ai/health", { method: "GET", signal: AbortSignal.timeout(5000) });
+      return { connected: true, express: true, fastapi: aiRes.ok };
+    } catch {
+      return { connected: true, express: true, fastapi: false };
+    }
+  } catch {
+    return { connected: false, express: false, fastapi: false };
+  }
 }

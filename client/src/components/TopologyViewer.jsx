@@ -7,39 +7,206 @@ const MUTED = "#F3F4F6";
 const PRIMARY = "#166534";
 
 /**
- * Auto-layout algorithm for topology nodes.
- * Places nodes in a radial pattern by type: routers at center,
- * firewalls inner ring, switches middle ring, hosts outer ring.
- * Returns positions scaled to a viewBox coordinate system.
+ * Map backend node_type (dynamips, vpcs, ethernet_switch, etc.)
+ * to a display category used by the layout algorithm.
+ */
+function displayType(node) {
+  const nt = node.node_type || "";
+  const tmpl = (node.template_name || "").toLowerCase();
+
+  // QEMU-based firewalls
+  if (nt === "qemu" && (tmpl.includes("pfsense") || tmpl.includes("firewall") || tmpl.includes("fortinet"))) {
+    return "firewall";
+  }
+  // Dynamips / IOU / QEMU routers
+  if (["dynamips", "iou"].includes(nt)) return "router";
+  if (nt === "qemu") return "router";
+
+  // Ethernet switches / hubs
+  if (["ethernet_switch", "ethernet_hub"].includes(nt)) return "switch";
+
+  // Docker containers
+  if (nt === "docker") return "docker";
+
+  // VPCS / host-like nodes
+  if (["vpcs", "traceng", "cloud", "nat"].includes(nt)) return "host";
+
+  // Frame relay / ATM — treat as switch-like
+  if (["frame_relay_switch", "atm_switch"].includes(nt)) return "switch";
+
+  return "host";
+}
+
+/**
+ * Force-directed layout algorithm.
+ *
+ * 1. Initial placement: radial by type (routers center, hosts outer)
+ * 2. Iterative repulsion to prevent overlaps
+ * 3. Link attraction to keep connected nodes reasonably close
+ *
+ * This avoids the "all devices stacked on top of each other" bug
+ * that occurred with the simple radial layout when node_ids
+ * were missing or multiple nodes mapped to the same ring position.
  */
 function computeLayout(nodes, links, viewW, viewH) {
+  if (!nodes || nodes.length === 0) return {};
+
   const cx = viewW / 2;
   const cy = viewH / 2;
   const maxR = Math.min(viewW, viewH) * 0.38;
+  const MIN_DIST = 100; // minimum distance between node centers
 
-  const RING_FRACTIONS = { router: 0.25, firewall: 0.5, switch: 0.72, host: 0.95 };
+  // ── Step 1: Initial radial placement by display type ──
+  const RING_FRACTIONS = { router: 0.3, firewall: 0.5, switch: 0.7, docker: 0.82, host: 0.92 };
 
-  // Group nodes by type
   const groups = {};
+  const nodeTypes = {};
   for (const n of nodes) {
-    const t = n.node_type || "host";
+    const t = displayType(n);
+    nodeTypes[n.node_id] = t;
     if (!groups[t]) groups[t] = [];
     groups[t].push(n);
   }
 
+  // Build initial positions
   const positions = {};
-  const typeOrder = ["router", "firewall", "switch", "host"];
+  const typeOrder = ["router", "firewall", "switch", "docker", "host"];
   for (const type of typeOrder) {
     const group = groups[type] || [];
-    const radius = maxR * (RING_FRACTIONS[type] || 0.95);
+    const radius = maxR * (RING_FRACTIONS[type] || 0.9);
     const count = group.length;
     for (let i = 0; i < count; i++) {
       const angle = (2 * Math.PI * i) / Math.max(count, 1) - Math.PI / 2;
       const nodeId = group[i].node_id;
+      // Add slight jitter to prevent exact overlap if node_ids are duplicated
+      const jitter = count === 1 ? 0 : (Math.random() - 0.5) * 4;
       positions[nodeId] = {
-        x: Math.round(cx + radius * Math.cos(angle)),
-        y: Math.round(cy + radius * Math.sin(angle)),
+        x: cx + radius * Math.cos(angle) + jitter,
+        y: cy + radius * Math.sin(angle) + jitter,
       };
+    }
+  }
+
+  // ── Handle duplicate/missing node_ids ──
+  // If multiple nodes share the same node_id, offset them
+  const idCounts = {};
+  for (const n of nodes) {
+    const id = n.node_id || "";
+    if (!idCounts[id]) idCounts[id] = 0;
+    idCounts[id]++;
+    if (idCounts[id] > 1) {
+      // Duplicate id — offset from the shared position
+      const base = positions[id] || { x: cx, y: cy };
+      const offset = idCounts[id] * 60;
+      positions[`${id}_${idCounts[id]}`] = { x: base.x + offset, y: base.y + offset };
+    }
+  }
+
+  // ── Step 2: Build link adjacency for attraction ──
+  const adjacency = {};
+  for (const n of nodes) {
+    adjacency[n.node_id] = [];
+  }
+  for (const link of links) {
+    const a = link.from_node;
+    const b = link.to_node;
+    if (adjacency[a]) adjacency[a].push(b);
+    if (adjacency[b]) adjacency[b].push(a);
+  }
+
+  // ── Step 3: Iterative force-directed refinement ──
+  const ITERATIONS = 80;
+  const REPULSION = 8000;   // repulsion strength
+  const ATTRACTION = 0.005; // link attraction strength
+  const DAMPING = 0.85;     // velocity damping per iteration
+
+  // Initialize velocities
+  const velocities = {};
+  for (const n of nodes) {
+    velocities[n.node_id] = { vx: 0, vy: 0 };
+  }
+
+  for (let iter = 0; iter < ITERATIONS; iter++) {
+    const forces = {};
+    for (const n of nodes) {
+      forces[n.node_id] = { fx: 0, fy: 0 };
+    }
+
+    // Repulsion: every node pair pushes apart
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i];
+        const b = nodes[j];
+        const pa = positions[a.node_id] || { x: cx, y: cy };
+        const pb = positions[b.node_id] || { x: cx, y: cy };
+        let dx = pa.x - pb.x;
+        let dy = pa.y - pb.y;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 1) dist = 1; // avoid division by zero
+
+        // Enforce minimum distance more aggressively
+        const minD = Math.max(MIN_DIST, 80);
+        if (dist < minD) {
+          const pushStrength = REPULSION * (minD - dist) / dist;
+          forces[a.node_id].fx += dx * pushStrength * 0.01;
+          forces[a.node_id].fy += dy * pushStrength * 0.01;
+          forces[b.node_id].fx -= dx * pushStrength * 0.01;
+          forces[b.node_id].fy -= dy * pushStrength * 0.01;
+        }
+
+        // General repulsion (coulomb-like)
+        const repForce = REPULSION / (dist * dist);
+        const ux = dx / dist;
+        const uy = dy / dist;
+        forces[a.node_id].fx += ux * repForce;
+        forces[a.node_id].fy += uy * repForce;
+        forces[b.node_id].fx -= ux * repForce;
+        forces[b.node_id].fy -= uy * repForce;
+      }
+    }
+
+    // Attraction: connected nodes pull toward each other
+    for (const link of links) {
+      const a = link.from_node;
+      const b = link.to_node;
+      const pa = positions[a] || { x: cx, y: cy };
+      const pb = positions[b] || { x: cx, y: cy };
+      const dx = pb.x - pa.x;
+      const dy = pb.y - pa.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < 1) continue;
+
+      // Spring-like: stronger pull if far apart
+      const idealDist = 180;
+      const attrForce = ATTRACTION * (dist - idealDist);
+      const ux = dx / dist;
+      const uy = dy / dist;
+      if (forces[a]) { forces[a].fx += ux * attrForce; forces[a].fy += uy * attrForce; }
+      if (forces[b]) { forces[b].fx -= ux * attrForce; forces[b].fy -= uy * attrForce; }
+    }
+
+    // Apply forces with damping
+    const maxForce = 50; // cap force to prevent explosions
+    for (const n of nodes) {
+      const id = n.node_id;
+      if (!positions[id]) continue;
+      const f = forces[id];
+      if (!f) continue;
+
+      // Clamp force
+      f.fx = Math.max(-maxForce, Math.min(maxForce, f.fx));
+      f.fy = Math.max(-maxForce, Math.min(maxForce, f.fy));
+
+      velocities[id].vx = (velocities[id].vx + f.fx) * DAMPING;
+      velocities[id].vy = (velocities[id].vy + f.fy) * DAMPING;
+
+      positions[id].x += velocities[id].vx;
+      positions[id].y += velocities[id].vy;
+
+      // Keep within viewBox bounds (with padding)
+      const pad = 60;
+      positions[id].x = Math.max(pad, Math.min(viewW - pad, positions[id].x));
+      positions[id].y = Math.max(pad, Math.min(viewH - pad, positions[id].y));
     }
   }
 
@@ -47,7 +214,10 @@ function computeLayout(nodes, links, viewW, viewH) {
 }
 
 // Node type → icon abbreviation
-const nodeAbbr = (type) => ({ router: "R", switch: "SW", host: "PC", firewall: "FW", docker: "DK" }[type] || "N");
+const nodeAbbr = (node) => {
+  const t = displayType(node);
+  return ({ router: "R", switch: "SW", host: "PC", firewall: "FW", docker: "DK" }[t] || "N");
+};
 
 // Node type → fill colors
 const nodeColors = {
@@ -58,7 +228,7 @@ const nodeColors = {
   docker:  { fill: "rgba(99,102,241,0.08)", stroke: "rgba(99,102,241,0.45)", text: "#4338CA" },
 };
 
-export default function TopologyViewer({ topology, onClose, onEdit, onApprove, isReview }) {
+export default function TopologyViewer({ topology, requirements, onClose, onEdit, onApprove, isReview }) {
   const [selected, setSelected] = useState(null);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -67,19 +237,33 @@ export default function TopologyViewer({ topology, onClose, onEdit, onApprove, i
   const containerRef = useRef(null);
 
   // ViewBox dimensions (internal coordinate system)
-  const VB_W = 1000;
-  const VB_H = 700;
+  const VB_W = 1200;
+  const VB_H = 800;
 
   const nodes = topology?.nodes || [];
   const links = topology?.links || [];
 
-  // Compute auto-layout positions
-  const positions = useMemo(() => computeLayout(nodes, links, VB_W, VB_H), [nodes, links, VB_W, VB_H]);
+  // Compute force-directed layout positions
+  const positions = useMemo(() => computeLayout(nodes, links, VB_W, VB_H), [nodes, links]);
 
   const getPos = (id) => positions[id] || { x: VB_W / 2, y: VB_H / 2 };
 
+  // Build a requirements lookup by node_id for image info
+  const reqByNodeId = useMemo(() => {
+    const map = {};
+    if (requirements && Array.isArray(requirements)) {
+      for (const r of requirements) {
+        if (r.node_id) map[r.node_id] = r;
+      }
+    }
+    return map;
+  }, [requirements]);
+
   // Find the selected node
   const selectedNode = selected ? nodes.find((n) => n.node_id === selected) : null;
+
+  // Find the requirements entry for the selected node
+  const selectedReq = selectedNode ? reqByNodeId[selectedNode.node_id] : null;
 
   // Find connections for selected node
   const selectedConnections = selectedNode
@@ -110,12 +294,6 @@ export default function TopologyViewer({ topology, onClose, onEdit, onApprove, i
   }, []);
 
   // Pan handlers
-  const handleMouseDown = useCallback((e) => {
-    if (e.button === 0) { // left click for panning only when shift is held or middle button
-      return;
-    }
-  }, []);
-
   const handlePanStart = useCallback((e) => {
     setIsPanning(true);
     setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
@@ -138,14 +316,14 @@ export default function TopologyViewer({ topology, onClose, onEdit, onApprove, i
     return () => el.removeEventListener("wheel", handleWheel);
   }, [handleWheel]);
 
-  // Node dimensions based on type
-  const nodeDims = (type) => {
-    switch (type) {
-      case "router":   return { w: 80, h: 44 };
-      case "switch":   return { w: 74, h: 40 };
-      case "firewall": return { w: 80, h: 44 };
-      case "docker":   return { w: 74, h: 40 };
-      default:         return { w: 60, h: 36 };
+  // Node dimensions based on display type
+  const nodeDims = (node) => {
+    switch (displayType(node)) {
+      case "router":   return { w: 90, h: 48 };
+      case "switch":   return { w: 80, h: 44 };
+      case "firewall": return { w: 90, h: 48 };
+      case "docker":   return { w: 80, h: 44 };
+      default:         return { w: 68, h: 38 };
     }
   };
 
@@ -369,9 +547,11 @@ export default function TopologyViewer({ topology, onClose, onEdit, onApprove, i
               {nodes.map((n) => {
                 const pos = getPos(n.node_id);
                 const sel = selected === n.node_id;
-                const t = n.node_type || "host";
-                const dims = nodeDims(t);
-                const colors = nodeColors[t] || nodeColors.host;
+                const dt = displayType(n);
+                const dims = nodeDims(n);
+                const colors = nodeColors[dt] || nodeColors.host;
+                const req = reqByNodeId[n.node_id];
+                const hasImage = req && req.image_file;
 
                 return (
                   <g
@@ -398,25 +578,36 @@ export default function TopologyViewer({ topology, onClose, onEdit, onApprove, i
                       y={pos.y - 2}
                       textAnchor="middle"
                       dominantBaseline="middle"
-                      fontSize="15"
+                      fontSize="16"
                       fontWeight="700"
                       fill={sel ? PRIMARY : colors.text}
                       fontFamily="monospace"
                     >
-                      {nodeAbbr(t)}
+                      {nodeAbbr(n)}
                     </text>
                     {/* Node name label below */}
                     <text
                       x={pos.x}
                       y={pos.y + dims.h / 2 + 16}
                       textAnchor="middle"
-                      fontSize="12"
+                      fontSize="13"
                       fontWeight="500"
                       fill={sel ? PRIMARY : "#6B7280"}
                       fontFamily="'Geist', system-ui, sans-serif"
                     >
                       {n.name}
                     </text>
+                    {/* Image indicator dot (green = has image, red = missing) */}
+                    {req && req.image_required && (
+                      <circle
+                        cx={pos.x + dims.w / 2 - 4}
+                        cy={pos.y - dims.h / 2 + 4}
+                        r={4}
+                        fill={hasImage ? "#22C55E" : "#EF4444"}
+                        stroke="white"
+                        strokeWidth={1}
+                      />
+                    )}
                   </g>
                 );
               })}
@@ -424,8 +615,8 @@ export default function TopologyViewer({ topology, onClose, onEdit, onApprove, i
               {/* ── Legend ─────────────────────────────────────────────────────── */}
               <g transform="translate(16,16)">
                 <rect
-                  width="140"
-                  height="110"
+                  width="150"
+                  height="125"
                   rx="6"
                   fill="rgba(255,255,255,0.92)"
                   stroke="rgba(0,0,0,0.08)"
@@ -439,6 +630,7 @@ export default function TopologyViewer({ topology, onClose, onEdit, onApprove, i
                   { abbr: "SW", label: "Switch", color: nodeColors.switch, y: 58 },
                   { abbr: "PC", label: "Host (VPCS)", color: nodeColors.host, y: 76 },
                   { abbr: "FW", label: "Firewall", color: nodeColors.firewall, y: 94 },
+                  { abbr: "DK", label: "Docker", color: nodeColors.docker, y: 112 },
                 ].map(({ abbr, label, color, y }) => (
                   <g key={abbr}>
                     <rect
@@ -494,10 +686,10 @@ export default function TopologyViewer({ topology, onClose, onEdit, onApprove, i
           </div>
         </div>
 
-        {/* ── Inspection Panel (always visible, 260px) ──────────────────────── */}
+        {/* ── Inspection Panel (always visible, 280px) ──────────────────────── */}
         <div
           style={{
-            width: 260,
+            width: 280,
             borderLeft: `1px solid ${BORDER}`,
             background: "white",
             overflowY: "auto",
@@ -542,16 +734,16 @@ export default function TopologyViewer({ topology, onClose, onEdit, onApprove, i
                   </div>
                   <span style={{
                     display: "inline-block",
-                    background: (nodeColors[selectedNode.node_type] || nodeColors.host).fill,
-                    border: `1px solid ${(nodeColors[selectedNode.node_type] || nodeColors.host).stroke}`,
+                    background: (nodeColors[displayType(selectedNode)] || nodeColors.host).fill,
+                    border: `1px solid ${(nodeColors[displayType(selectedNode)] || nodeColors.host).stroke}`,
                     borderRadius: 6,
                     padding: "4px 10px",
                     fontSize: 12,
                     fontWeight: 600,
-                    color: (nodeColors[selectedNode.node_type] || nodeColors.host).text,
+                    color: (nodeColors[displayType(selectedNode)] || nodeColors.host).text,
                     fontFamily: "monospace",
                   }}>
-                    {(selectedNode.node_type || "HOST").toUpperCase()}
+                    {(displayType(selectedNode) || "HOST").toUpperCase()}
                   </span>
                 </div>
 
@@ -563,6 +755,68 @@ export default function TopologyViewer({ topology, onClose, onEdit, onApprove, i
                     </div>
                     <div style={{ fontSize: 13, color: "#111", fontFamily: "monospace", wordBreak: "break-all" }}>
                       {selectedNode.template_name}
+                    </div>
+                  </div>
+                )}
+
+                {/* Node Type (raw) */}
+                {selectedNode.node_type && (
+                  <div>
+                    <div style={{ color: "#9CA3AF", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 4, textTransform: "uppercase" }}>
+                      Node Type
+                    </div>
+                    <div style={{ fontSize: 13, color: "#111", fontFamily: "monospace" }}>
+                      {selectedNode.node_type}
+                    </div>
+                  </div>
+                )}
+
+                {/* Image File — from requirements (profile first, then appliance.py) */}
+                {selectedReq && selectedReq.image_required && (
+                  <div>
+                    <div style={{ color: "#9CA3AF", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 4, textTransform: "uppercase" }}>
+                      Image File
+                    </div>
+                    {selectedReq.image_file ? (
+                      <div style={{
+                        fontSize: 12,
+                        color: "#166534",
+                        fontFamily: "monospace",
+                        wordBreak: "break-all",
+                        background: "rgba(22,101,52,0.06)",
+                        padding: "6px 8px",
+                        borderRadius: 4,
+                        border: "1px solid rgba(22,101,52,0.15)",
+                      }}>
+                        {selectedReq.image_file}
+                      </div>
+                    ) : (
+                      <div style={{
+                        fontSize: 12,
+                        color: "#DC2626",
+                        fontFamily: "monospace",
+                        background: "#FEF2F2",
+                        padding: "6px 8px",
+                        borderRadius: 4,
+                        border: "1px solid #FECACA",
+                      }}>
+                        Missing — configure in profile
+                      </div>
+                    )}
+                    <div style={{ fontSize: 11, color: "#9CA3AF", marginTop: 4 }}>
+                      Source: {selectedReq.image_file ? "Profile / Appliance defaults" : "Not configured"}
+                    </div>
+                  </div>
+                )}
+
+                {/* Image status for built-in nodes */}
+                {selectedReq && !selectedReq.image_required && (
+                  <div>
+                    <div style={{ color: "#9CA3AF", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 4, textTransform: "uppercase" }}>
+                      Image Required
+                    </div>
+                    <div style={{ fontSize: 13, color: "#6B7280" }}>
+                      No — built-in node type
                     </div>
                   </div>
                 )}
@@ -639,7 +893,7 @@ export default function TopologyViewer({ topology, onClose, onEdit, onApprove, i
                 Select a node
               </div>
               <div style={{ fontSize: 12, color: "#9CA3AF", lineHeight: 1.5 }}>
-                Click on any node in the topology to view its details, connections, and configuration.
+                Click on any node in the topology to view its details, image requirements, and connections.
               </div>
             </div>
           )}

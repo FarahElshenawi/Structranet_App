@@ -180,12 +180,11 @@ RULES:
 {security_block}
 
 CHAIN-OF-THOUGHT REQUIREMENT:
-Before writing the topology JSON, you MUST reason step-by-step about:
-  a) Which device types best fit the request and why.
-  b) How many of each device is needed.
-  c) How the devices connect (topology pattern: star, ring, hierarchical, etc.).
-  d) Any VLAN / security / redundancy considerations.
-  e) Any link-limit constraints you are working around.
+Use the "thinking" key to act as a friendly, expert Senior Network Architect talking directly to the user. 
+In this string, you MUST:
+1. Acknowledge their request naturally (e.g., "Sure, I'd be happy to design this school network for you!").
+2. Explain the architectural choices you made step-by-step (devices selected, VLANs, security).
+3. Maintain a conversational, helpful, and natural tone, exactly like an AI assistant chatting with a user.
 
 OUTPUT FORMAT — return a SINGLE JSON object with exactly two top-level keys:
 

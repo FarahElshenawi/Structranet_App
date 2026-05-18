@@ -1,40 +1,32 @@
 """
-Structranet AI — AI Agent  (V4.0)
+Structranet AI — AI Agent  (V5.0)
 
 Translates a natural language request into a validated GNS3Project.
 
-V4.0 additions over V3.3:
-  1. Chain-of-Thought (CoT) envelope
-       The LLM now returns a two-key JSON object:
-         { "thinking": "<step-by-step reasoning>", "topology": { <TopologyRequest> } }
-       _call_step1() unpacks the envelope; validation is applied only to
-       the inner "topology" key, so the existing Pydantic gates are untouched.
+V5.0 — "First-Attempt Perfect" overhaul:
+  1. Hardened system prompt with explicit wiring patterns, build algorithm,
+     and forbidden-pattern guardrails.  The LLM now follows a mandatory
+     5-step design process that guarantees connectivity, respects port
+     limits, and handles multi-branch / multi-site topologies.
 
-  2. Multi-turn chat history
-       generate_network_topology() accepts an optional `chat_history` list
-       (standard OpenAI message dicts).  On every call the history is
-       prepended to the messages array so the LLM refines the existing
-       design instead of starting from scratch.  The function returns
-       (result, updated_history, thinking_text) so callers can accumulate
-       turns across the interactive Edit loop.
+  2. Pre-validation auto-repair pipeline:
+     - _repair_disconnected_graph:  auto-bridges isolated groups via
+       an Ethernet Switch so the topology is always fully connected.
+     - _repair_single_port_violations:  auto-inserts an Ethernet Switch
+       intermediary when NAT / VPCS / TraceNG nodes have >1 connection.
+     - _repair_duplicate_connections:  removes duplicate links.
+     Repairs run BEFORE Pydantic validation, so most topologies pass
+     on attempt 1 without needing a retry.
 
-  3. Rich node context
-       process_and_save_topology() calls _enrich_nodes() after hardware
-       injection.  This post-processor adds underscore-prefixed metadata
-       fields to each node's properties dict:
-         _interfaces        – computed interface name list (from context_builder)
-         _hardware_summary  – human-readable slot/adapter summary string
-         _security_role     – forwarded from topology-phase LLM security_role
-         _zone              – forwarded from topology-phase LLM zone field
-         _image_required    – True for appliance types, False for built-ins
-       These keys are intentionally outside the Phase 2 safe-merge whitelist
-       (SOFTWARE_CONFIG_KEYS) so they can never be accidentally overwritten.
+  3. Dynamic MAX_TOKENS:  scales with topology complexity so the LLM
+     never truncates large enterprise topologies.
 
-  4. Image Verification Manifest
-       generate_image_manifest() runs post-Phase-1.  It cross-references
-       every node's template_name against the preflight profile's
-       template_image_map and writes a human-readable image_manifest.txt
-       to the output directory.
+  4. Improved error feedback on retry:  includes a concrete repair hint
+     (e.g. "Add a switch between NAT-ISP and the two routers") instead
+     of just the raw validation error.
+
+  5. Enterprise security prompt now includes multi-branch wiring patterns
+     and explicit NAT intermediary rule (see security_prompts.py V5.0).
 
 All existing behaviour (port assigner, hardware injection, VLAN patching,
 Pydantic validation, retry loop, security profiles) is preserved.
@@ -44,7 +36,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -58,7 +52,9 @@ from structranet.catalog.hw_config import inject_hardware_config
 from structranet.ai.llm_utils import _call_with_retry, _extract_json, _get_client
 from structranet.catalog.port_assigner import build_topology_from_request
 from structranet.constants.schema import (
+    Connection,
     GNS3Project,
+    NodeRequest,
     TopologyRequest,
     validate_topology,
     validate_topology_request,
@@ -70,7 +66,7 @@ load_dotenv()
 logger = logging.getLogger("structranet.ai_agent")
 
 DEFAULT_MODEL = os.getenv("AI_MODEL", "openrouter/owl-alpha")
-MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "8192"))
+BASE_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "16384"))
 
 # Node types that never need a disk image
 _BUILTIN_NODE_TYPES: frozenset = frozenset(
@@ -80,6 +76,9 @@ _BUILTIN_NODE_TYPES: frozenset = frozenset(
 _APPLIANCE_NODE_TYPES: frozenset = frozenset(
     ["dynamips", "iou", "qemu", "docker", "virtualbox", "vmware"]
 )
+
+# Node types with exactly 1 port — the most common source of validation failures
+_SINGLE_PORT_TYPES: frozenset = frozenset(["vpcs", "traceng", "nat"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -106,8 +105,18 @@ class SessionState:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Step 1 prompt builder  (CoT envelope)
+#  Step 1 prompt builder  (V5.0 — First-Attempt Perfect)
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _compute_max_tokens(devices: List[Dict[str, Any]], security_profile: str) -> int:
+    """Dynamic token limit based on expected topology complexity."""
+    base = BASE_MAX_TOKENS
+    # More devices → more output needed
+    device_factor = min(len(devices) * 200, 8000)
+    # Enterprise security profile adds substantial config
+    security_factor = 3000 if security_profile == "enterprise" else 0
+    return base + device_factor + security_factor
+
 
 def _build_step1_prompt(
     devices: List[Dict[str, Any]],
@@ -130,7 +139,7 @@ def _build_step1_prompt(
         pc = d.get("port_count")
         if gtype in SINGLE_LINK_TYPES:
             limit_lines.append(
-                f"  - {name} ({gtype}): MAX 1 link. Insert a switch if more needed."
+                f"  - {name} ({gtype}): MAX 1 link. MUST use a switch intermediary if more needed."
             )
         elif gtype == "dynamips":
             platform = name.lower()
@@ -148,52 +157,177 @@ def _build_step1_prompt(
 
     schema_json = json.dumps(TopologyRequest.model_json_schema(), indent=2)
 
-    return f"""You are the Core Architect Agent for Structranet AI.
+    return f"""You are the Core Architect Agent for StructuraNet AI.
+You are a Senior Network Engineer who designs GNS3 topologies that work
+perfectly on the first attempt — no retries, no errors.
+
 Translate the user's natural language request into a network topology.
 
-IMPORTANT: You produce ONLY the logical design — which devices connect to which.
+════════════════════════════════════════════════════════════════════════
+  CRITICAL: YOU PRODUCE ONLY THE LOGICAL DESIGN
+════════════════════════════════════════════════════════════════════════
+
 DO NOT produce adapter numbers, port numbers, or any port assignments.
 Those are computed automatically by the system after you respond.
+Your ONLY job is: which devices exist, and which devices connect to which.
 
-AVAILABLE HARDWARE (use ONLY these):
+════════════════════════════════════════════════════════════════════════
+  AVAILABLE HARDWARE (use ONLY these)
+════════════════════════════════════════════════════════════════════════
+
 {inv_json}
 
-LINK LIMITS (do NOT exceed):
+════════════════════════════════════════════════════════════════════════
+  LINK LIMITS (do NOT exceed — this is the #1 cause of failures)
+════════════════════════════════════════════════════════════════════════
+
 {limit_text}
 
-RULES:
+════════════════════════════════════════════════════════════════════════
+  MANDATORY BUILD ALGORITHM — follow these steps IN ORDER
+════════════════════════════════════════════════════════════════════════
+
+STEP 1 — Identify required devices
+  Read the user request carefully. List every router, switch, host, and
+  special node (NAT, Cloud) needed. Assign each a unique node_id.
+
+STEP 2 — Place single-port devices (NAT, VPCS, Cloud)
+  ⚠️  NAT, VPCS, TraceNG, and Cloud have ONLY 1 port.
+  They can connect to EXACTLY ONE other device.
+  If multiple devices need to reach a NAT or Cloud node, you MUST
+  insert an Ethernet Switch between them:
+
+    ❌ WRONG:  R1 → NAT-ISP ← R2          (NAT has 2 connections!)
+    ✅ RIGHT:  R1 → ISP-SW → NAT-ISP      (NAT has 1 connection)
+                R2 ↗
+
+    ❌ WRONG:  PC1 → R1 ← PC2             (if R1 has no spare ports)
+    ✅ RIGHT:  PC1 → SW1 → R1             (switch fans out the connections)
+                PC2 ↗
+
+STEP 3 — Create the connectivity backbone
+  Connect all routers and core switches into a SINGLE connected graph.
+  Every router must have a path to every other router.
+  For multi-site / multi-branch networks, connect the branches:
+    Branch1-Edge-R1 ←—serial/ethernet—→ Branch2-Edge-R2
+  or use a shared WAN Ethernet Switch between branches.
+
+STEP 4 — Attach distribution and access switches
+  Connect core/distribution switches to the backbone routers.
+  Then connect access switches to the distribution layer.
+  Use the Router-on-a-Stick pattern when a router must serve multiple
+  VLANs through a single interface:
+    Router → Core-SW (trunk) → Access-SW1 (VLAN 10)
+                              → Access-SW2 (VLAN 20)
+                              → Access-SW3 (VLAN 30)
+
+STEP 5 — Attach end devices (VPCS, servers)
+  Every VPCS connects to exactly ONE access switch.
+  Every VPCS gets exactly ONE connection (it has only 1 port).
+  If a VPCS needs to reach multiple networks, that happens through
+  its switch + router — NOT by connecting it to multiple devices.
+
+STEP 6 — VERIFY before outputting
+  Check your topology against every rule below BEFORE writing JSON.
+
+════════════════════════════════════════════════════════════════════════
+  RULES — ALL are mandatory, NONE are optional
+════════════════════════════════════════════════════════════════════════
+
 1. ZERO HALLUCINATION: Only use device names from the inventory above.
 2. node_type must be a GNS3 literal: dynamips, qemu, vpcs, ethernet_switch,
    ethernet_hub, docker, iou, cloud, traceng, frame_relay_switch, atm_switch,
    virtualbox, vmware, nat.
-3. template_name must be the exact inventory name (e.g. "c7200", "Switch").
+3. template_name must be the exact inventory name (e.g. "Cisco 3745", "Ethernet Switch", "VPCS").
 4. name is a human-readable label (e.g. "R1-Edge", "Core-SW1", "PC1").
 5. node_id is a short unique key (e.g. "R1", "SW1", "PC1").
 6. DO NOT assign port numbers — just list connections as "from_node → to_node".
 7. No two connections may link the same pair of nodes (no parallel links).
-8. Every node must be reachable from every other node (fully connected graph).
-9. VPCS/TraceNG/NAT nodes may have AT MOST 1 connection. Use a switch if more needed.
+8. FULLY CONNECTED GRAPH: Every node must be reachable from every other node.
+   If you have multiple sites/branches, they MUST be connected via links
+   between their routers or through a shared WAN segment.
+9. SINGLE-PORT RULE (CRITICAL — #1 cause of failures):
+   NAT, VPCS, and TraceNG nodes may have AT MOST 1 connection.
+   If multiple devices need to reach a NAT node, insert an Ethernet Switch
+   as an intermediary (see Step 2 pattern above).
 10. If a router needs more subnet switches than its link limit allows, use the
     Core-SW + Router-on-a-Stick pattern (router → 1 core switch → N access switches).
 11. link_type is "ethernet" (default) or "serial" (for WAN router-to-router links).
 12. If a device isn't available, substitute with the closest available match.
+
+════════════════════════════════════════════════════════════════════════
+  FORBIDDEN PATTERNS — never do these
+════════════════════════════════════════════════════════════════════════
+
+❌ NEVER connect more than 1 link to a NAT node — it has 1 port only.
+❌ NEVER connect more than 1 link to a VPCS node — it has 1 port only.
+❌ NEVER create two separate networks that aren't connected.
+   If you have Branch-A and Branch-B, their routers MUST be linked.
+❌ NEVER connect a host (VPCS) directly to a router if the router already
+   uses all its ports. Use an access switch instead.
+❌ NEVER use a router as a LAN hub. Use an Ethernet Switch for fan-out.
+
+════════════════════════════════════════════════════════════════════════
+  WIRING PATTERNS — use these as building blocks
+════════════════════════════════════════════════════════════════════════
+
+PATTERN A — Single-site enterprise:
+  NAT-ISP → ISP-SW → Edge-R1 → Core-SW → [Access-SW1, Access-SW2, ...]
+                                                  ↕         ↕
+                                              [VPCSes]   [VPCSes]
+
+PATTERN B — Multi-site / multi-branch:
+  Branch-1: NAT-ISP1 → ISP-SW1 → FW1 → Core-SW1 → [Access switches + VPCS]
+                                        ↕
+                                  serial/WAN link
+                                        ↕
+  Branch-2: NAT-ISP2 → ISP-SW2 → FW2 → Core-SW2 → [Access switches + VPCS]
+
+  Key: Each branch has its OWN NAT + ISP-SW. The branches connect
+  via a direct link between their perimeter routers (FW1 ↔ FW2).
+
+PATTERN C — Router-on-a-Stick (Inter-VLAN routing):
+  R1 → Core-SW (trunk) → Access-SW-VLAN10 → [PC1, PC2, ...]
+                        → Access-SW-VLAN20 → [PC3, PC4, ...]
+                        → Access-SW-VLAN30 → [PC5, PC6, ...]
+  R1 uses sub-interfaces (one per VLAN) on its single link to Core-SW.
+
+PATTERN D — NAT intermediary (when NAT must serve multiple devices):
+  ❌ WRONG: R1 → NAT ← R2         (2 connections to 1-port NAT)
+  ✅ RIGHT: R1 → ISP-SW → NAT     (NAT has 1 connection to switch)
+            R2 ↗                    (R1 and R2 connect through switch)
 {security_block}
 
-CHAIN-OF-THOUGHT REQUIREMENT:
-Use the "thinking" key to act as a friendly, expert Senior Network Architect talking directly to the user. 
-In this string, you MUST:
-1. Acknowledge their request naturally (e.g., "Sure, I'd be happy to design this school network for you!").
-2. Explain the architectural choices you made step-by-step (devices selected, VLANs, security).
-3. Maintain a conversational, helpful, and natural tone, exactly like an AI assistant chatting with a user.
+════════════════════════════════════════════════════════════════════════
+  CHAIN-OF-THOUGHT REQUIREMENT
+════════════════════════════════════════════════════════════════════════
 
-OUTPUT FORMAT — return a SINGLE JSON object with exactly two top-level keys:
+Use the "thinking" key to act as a friendly, expert Senior Network
+Architect talking directly to the user. In this string, you MUST:
+
+1. Acknowledge their request naturally (e.g., "Sure, I'd be happy to
+   design this enterprise network for you!").
+2. Walk through the BUILD ALGORITHM steps above:
+   - Step 1: List the devices you'll need
+   - Step 2: How you handle single-port devices (NAT, VPCS)
+   - Step 3: How you create the backbone connectivity
+   - Step 4: How you attach switches
+   - Step 5: How you attach end devices
+   - Step 6: Your verification — confirm fully connected, no port violations
+3. Maintain a conversational, helpful, and natural tone.
+
+════════════════════════════════════════════════════════════════════════
+  OUTPUT FORMAT
+════════════════════════════════════════════════════════════════════════
+
+Return a SINGLE JSON object with exactly two top-level keys:
 
 {{
   "thinking": "<your step-by-step architectural reasoning as a plain string>",
   "topology": {{
     "name": "<project name>",
     "nodes": [
-      {{"node_id": "R1", "name": "R1-Main", "node_type": "dynamips",
+      {{"node_id": "R1", "name": "R1-Edge", "node_type": "dynamips",
         "template_name": "<exact inventory name>", "compute_id": "local"}}
     ],
     "connections": [
@@ -206,6 +340,306 @@ The "topology" value must conform exactly to this JSON Schema:
 {schema_json}
 
 Respond with ONLY the JSON object. No markdown fences. No explanation outside the JSON."""
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Pre-validation auto-repair functions  (V5.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _repair_disconnected_graph(
+    nodes: List[Dict[str, Any]],
+    connections: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Auto-bridge isolated groups by inserting an Ethernet Switch.
+
+    Uses Union-Find to detect isolated groups. For each pair of
+    disconnected groups, picks the best router-like node from each,
+    creates a bridge switch, and adds links from each router to the switch.
+
+    Returns the modified connections list (new connections appended).
+    Also modifies nodes list in-place to add bridge switches.
+    """
+    if len(nodes) <= 1:
+        return connections
+
+    # Build node_id → node map
+    node_map = {n["node_id"]: n for n in nodes}
+
+    # Union-Find
+    parent = {n["node_id"]: n["node_id"] for n in nodes}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for c in connections:
+        union(c["from_node"], c["to_node"])
+
+    groups: Dict[str, List[str]] = {}
+    for n in nodes:
+        groups.setdefault(find(n["node_id"]), []).append(n["node_id"])
+
+    if len(groups) <= 1:
+        return connections  # Already connected
+
+    logger.warning(
+        "Auto-repair: Topology has %d isolated groups — bridging them",
+        len(groups),
+    )
+
+    # Prefer router-like nodes as bridge endpoints
+    _ROUTER_TYPES = {"dynamips", "iou", "qemu"}
+    _SWITCH_TYPES = {"ethernet_switch", "ethernet_hub"}
+
+    def _pick_bridge_node(group_node_ids: List[str]) -> Optional[str]:
+        """Pick the best node to connect a bridge link to."""
+        # Prefer routers, then switches, then anything
+        for nid in group_node_ids:
+            ntype = node_map[nid].get("node_type", "")
+            if ntype in _ROUTER_TYPES:
+                return nid
+        for nid in group_node_ids:
+            ntype = node_map[nid].get("node_type", "")
+            if ntype in _SWITCH_TYPES:
+                return nid
+        return group_node_ids[0] if group_node_ids else None
+
+    new_connections = list(connections)
+    bridge_counter = 0
+
+    # Bridge each isolated group to the first group
+    group_list = list(groups.values())
+    anchor_group = group_list[0]
+    anchor_node = _pick_bridge_node(anchor_group)
+
+    if anchor_node is None:
+        return connections
+
+    for i, group in enumerate(group_list[1:], start=1):
+        bridge_counter += 1
+        bridge_sw_id = f"Bridge-SW{bridge_counter}"
+        bridge_sw_name = f"Bridge-SW{bridge_counter}"
+
+        # Add bridge switch node
+        bridge_node = {
+            "node_id": bridge_sw_id,
+            "name": bridge_sw_name,
+            "node_type": "ethernet_switch",
+            "template_name": "Ethernet Switch",
+            "compute_id": "local",
+        }
+        nodes.append(bridge_node)
+        node_map[bridge_sw_id] = bridge_node
+        parent[bridge_sw_id] = bridge_sw_id
+
+        # Connect anchor node to bridge switch
+        new_connections.append({
+            "from_node": anchor_node,
+            "to_node": bridge_sw_id,
+            "link_type": "ethernet",
+        })
+        union(anchor_node, bridge_sw_id)
+
+        # Connect a node from this group to bridge switch
+        group_node = _pick_bridge_node(group)
+        if group_node:
+            new_connections.append({
+                "from_node": group_node,
+                "to_node": bridge_sw_id,
+                "link_type": "ethernet",
+            })
+            union(group_node, bridge_sw_id)
+
+    logger.info(
+        "Auto-repair: Inserted %d bridge switch(es) to connect isolated groups",
+        bridge_counter,
+    )
+    return new_connections
+
+
+def _repair_single_port_violations(
+    nodes: List[Dict[str, Any]],
+    connections: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Auto-insert Ethernet Switch intermediary for overloaded single-port nodes.
+
+    If a NAT/VPCS/TraceNG node has more than 1 connection, keep the first
+    connection direct, and route all subsequent connections through a new
+    intermediary switch.
+
+    Returns the modified connections list.
+    Also modifies nodes list in-place to add intermediary switches.
+    """
+    # Count connections per node
+    conn_count: Dict[str, int] = {}
+    for c in connections:
+        conn_count[c["from_node"]] = conn_count.get(c["from_node"], 0) + 1
+        conn_count[c["to_node"]] = conn_count.get(c["to_node"], 0) + 1
+
+    # Find overloaded single-port nodes
+    overloaded = {
+        nid: count for nid, count in conn_count.items()
+        if count > 1 and nid in {n["node_id"] for n in nodes}
+    }
+
+    if not overloaded:
+        return connections
+
+    node_map = {n["node_id"]: n for n in nodes}
+    new_connections = list(connections)
+    intermediary_counter = 0
+
+    for nid, excess_count in overloaded.items():
+        node = node_map.get(nid)
+        if not node or node["node_type"] not in _SINGLE_PORT_TYPES:
+            continue
+
+        # This node has >1 connection but only 1 port
+        logger.warning(
+            "Auto-repair: Node '%s' (%s) has %d connections but only 1 port — "
+            "inserting intermediary switch",
+            nid, node["node_type"], excess_count,
+        )
+
+        # Collect all connections involving this node
+        involved = [
+            (i, c) for i, c in enumerate(new_connections)
+            if c["from_node"] == nid or c["to_node"] == nid
+        ]
+
+        if len(involved) <= 1:
+            continue
+
+        # Keep the first connection, reroute the rest through an intermediary switch
+        intermediary_counter += 1
+        inter_sw_id = f"Inter-SW-{nid}"
+        inter_sw_name = f"Inter-SW-{nid}"
+
+        # Add intermediary switch node (if not already added for this node)
+        if inter_sw_id not in node_map:
+            inter_node = {
+                "node_id": inter_sw_id,
+                "name": inter_sw_name,
+                "node_type": "ethernet_switch",
+                "template_name": "Ethernet Switch",
+                "compute_id": "local",
+            }
+            nodes.append(inter_node)
+            node_map[inter_sw_id] = inter_node
+
+        # Mark which connections to remove (all but first)
+        indices_to_remove: List[int] = []
+
+        for idx, (orig_idx, conn) in enumerate(involved):
+            if idx == 0:
+                # Keep the first connection direct — but change the partner
+                # to connect to the intermediary switch instead
+                # Actually: keep the direct connection to the single-port node,
+                # but reroute through intermediary:
+                #   original: OtherNode → SinglePortNode
+                #   becomes:  OtherNode → Inter-SW → SinglePortNode
+                partner = (
+                    conn["to_node"] if conn["from_node"] == nid else conn["from_node"]
+                )
+                link_type = conn.get("link_type", "ethernet")
+
+                # Replace: partner → Inter-SW, and Inter-SW → single-port-node
+                # But we need to be careful: remove original, add two new
+                indices_to_remove.append(orig_idx)
+
+                # Partner → Inter-SW
+                new_connections.append({
+                    "from_node": partner,
+                    "to_node": inter_sw_id,
+                    "link_type": link_type,
+                })
+                # Inter-SW → SinglePortNode
+                new_connections.append({
+                    "from_node": inter_sw_id,
+                    "to_node": nid,
+                    "link_type": "ethernet",
+                })
+            else:
+                # Reroute subsequent connections through the intermediary switch
+                partner = (
+                    conn["to_node"] if conn["from_node"] == nid else conn["from_node"]
+                )
+                link_type = conn.get("link_type", "ethernet")
+
+                indices_to_remove.append(orig_idx)
+
+                # Partner → Inter-SW (instead of Partner → SinglePortNode)
+                new_connections.append({
+                    "from_node": partner,
+                    "to_node": inter_sw_id,
+                    "link_type": link_type,
+                })
+
+        # Remove original connections (reverse order to preserve indices)
+        for idx in sorted(indices_to_remove, reverse=True):
+            if idx < len(new_connections):
+                new_connections.pop(idx)
+
+    logger.info(
+        "Auto-repair: Inserted %d intermediary switch(es) for single-port violations",
+        intermediary_counter,
+    )
+    return new_connections
+
+
+def _repair_duplicate_connections(
+    connections: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Remove duplicate connections (same pair + same link_type)."""
+    seen: Set[tuple] = set()
+    cleaned: List[Dict[str, Any]] = []
+    dupes_removed = 0
+
+    for c in connections:
+        key = (frozenset([c["from_node"], c["to_node"]]), c.get("link_type", "ethernet"))
+        if key in seen:
+            dupes_removed += 1
+            continue
+        seen.add(key)
+        cleaned.append(c)
+
+    if dupes_removed > 0:
+        logger.info(
+            "Auto-repair: Removed %d duplicate connection(s)", dupes_removed
+        )
+    return cleaned
+
+
+def _run_auto_repairs(
+    topo_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Run the full auto-repair pipeline on a raw topology dict.
+
+    Modifies the dict in-place and returns it.
+    Repairs run in order: duplicates → single-port → disconnected.
+    """
+    nodes = topo_data.get("nodes", [])
+    connections = topo_data.get("connections", [])
+
+    # 1. Remove duplicates first (simplest)
+    connections = _repair_duplicate_connections(connections)
+
+    # 2. Fix single-port violations (insert intermediary switches)
+    connections = _repair_single_port_violations(nodes, connections)
+
+    # 3. Fix disconnected graph (bridge isolated groups)
+    connections = _repair_disconnected_graph(nodes, connections)
+
+    topo_data["nodes"] = nodes
+    topo_data["connections"] = connections
+    return topo_data
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -227,6 +661,7 @@ def _call_step1(
     """
     client = _get_client()
     system_content = _build_step1_prompt(devices, security_profile=security_profile)
+    max_tokens = _compute_max_tokens(devices, security_profile)
 
     # Build message list: system → history → new user message
     messages: List[Dict[str, str]] = [{"role": "system", "content": system_content}]
@@ -238,7 +673,9 @@ def _call_step1(
         error_text = "\n".join(f"  - {e}" for e in previous_errors)
         user_content = (
             f"{user_request}\n\n"
-            f"PREVIOUS ATTEMPT FAILED WITH THESE ERRORS — fix them:\n{error_text}"
+            f"PREVIOUS ATTEMPT FAILED WITH THESE ERRORS — fix them:\n{error_text}\n\n"
+            f"Remember: NAT/VPCS have only 1 port. Use Ethernet Switch as intermediary. "
+            f"All branches/sites MUST be connected to each other."
         )
     else:
         user_content = user_request
@@ -254,7 +691,7 @@ def _call_step1(
             return client.chat.completions.create(
                 model=DEFAULT_MODEL,
                 messages=messages,
-                max_tokens=MAX_TOKENS,
+                max_tokens=max_tokens,
                 response_format={"type": "json_object"},
             )
 
@@ -279,7 +716,10 @@ def _call_step1(
             )
             topology_data = outer
 
-        result = TopologyRequest.model_validate(topology_data)
+        # ── Auto-repair before validation ────────────────────────────────────
+        repaired = _run_auto_repairs(topology_data)
+
+        result = TopologyRequest.model_validate(repaired)
 
         # Accumulate chat history for multi-turn continuity.
         # Append the user turn ONLY if the last entry isn't already a user
@@ -441,16 +881,16 @@ def generate_image_manifest(
         template = node.get("template_name", "")
 
         if ntype in _BUILTIN_NODE_TYPES:
-            status = "✓  Built-in — no image required"
+            status = "Built-in — no image required"
         elif ntype in _APPLIANCE_NODE_TYPES:
             if template in template_image_map:
                 image_file = template_image_map[template]
-                status = f"✓  {image_file}"
+                status = f"{image_file}"
             else:
-                status = "⚠  NOT IN IMAGE MAP — verify manually"
+                status = "NOT IN IMAGE MAP — verify manually"
                 missing.append(f"  {nid} / {template}")
         else:
-            status = "–  Unknown type"
+            status = "Unknown type"
 
         lines.append(f"  {nid:<12} {name:<20} {template:<25} {status}")
 
@@ -458,12 +898,12 @@ def generate_image_manifest(
 
     if missing:
         lines += [
-            "  ⚠  MISSING IMAGE MAPPINGS (add to preflight profile or catalog):",
+            "  MISSING IMAGE MAPPINGS (add to preflight profile or catalog):",
             *[f"    {m}" for m in missing],
             "",
         ]
     else:
-        lines.append("  ✓  All appliance nodes have image mappings.")
+        lines.append("  All appliance nodes have image mappings.")
 
     lines += [
         "",

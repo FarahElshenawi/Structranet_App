@@ -20,7 +20,7 @@ const inputStyle = {
 };
 
 export default function LoginPage({ onSwitchToRegister, onBack }) {
-  const { login } = useAuth();
+  const { login, demoLogin } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -200,6 +200,40 @@ export default function LoginPage({ onSwitchToRegister, onBack }) {
             onMouseOut={(e) => (e.currentTarget.style.background = PRIMARY)}
           >
             {loading ? "Signing in..." : "Sign in"}
+          </button>
+
+          {/* Try Demo — instant access without registration */}
+          <button
+            type="button"
+            onClick={async () => {
+              try { await demoLogin(); } catch (err) { setError(err.message || "Demo login failed"); }
+            }}
+            style={{
+              width: "100%",
+              background: "white",
+              color: "#374151",
+              border: `1px solid ${BORDER}`,
+              borderRadius: 10,
+              padding: "12px",
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: "pointer",
+              transition: "all .15s",
+              fontFamily: "inherit",
+              marginTop: 8,
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.borderColor = PRIMARY;
+              e.currentTarget.style.color = PRIMARY;
+              e.currentTarget.style.background = "rgba(22,101,52,0.02)";
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.borderColor = BORDER;
+              e.currentTarget.style.color = "#374151";
+              e.currentTarget.style.background = "white";
+            }}
+          >
+            Try Demo
           </button>
         </form>
 

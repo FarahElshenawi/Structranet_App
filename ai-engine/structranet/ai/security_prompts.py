@@ -1,5 +1,5 @@
 """
-security_prompts.py — Security-by-Design Prompt Injection for Structranet AI
+security_prompts.py — Security-by-Design Prompt Injection for Structuranet AI
 
 Three-tier security profiles:
   "none"       → no security prompts injected (default, universal behaviour)
@@ -7,8 +7,14 @@ Three-tier security profiles:
   "enterprise" → full security archetype: ZBF, ACLs, DAI, DHCP Snooping,
                  STP hardening, SNMPv3, ZBF, IPsec-ready, HSRP, uRPF
 
+V5.0 changes:
+  - Basic profile: Added NAT intermediary rule (ISP-SW between NAT and routers)
+  - Enterprise profile: Added multi-branch wiring pattern, NAT intermediary rule,
+    explicit inter-branch connectivity requirement, and per-branch security zones
+  - Config enterprise: Added multi-branch WAN addressing and VPN tunnel guidance
+
 Usage:
-    from structranet.ai.security_prompts import get_topology_security_prompt, get_config_security_prompt
+    from structuranet.ai.security_prompts import get_topology_security_prompt, get_config_security_prompt
 
     topology_extra = get_topology_security_prompt(profile.security_profile)
     config_extra   = get_config_security_prompt(profile.security_profile)
@@ -32,8 +38,13 @@ _TOPOLOGY_BASIC = """
 
 Design the topology with these minimum security considerations:
 
-1. INTERNET EDGE: Always include a NAT node (node_id: "NAT-ISP") for
-   the Internet edge. Connect it ONLY to the outermost router.
+1. INTERNET EDGE: Always include a NAT node for the Internet edge.
+   CRITICAL: NAT has only 1 port. It can connect to exactly ONE device.
+   If multiple routers need Internet access, insert an Ethernet Switch
+   ("ISP-SW") between the NAT and the routers:
+     R1 → ISP-SW → NAT-ISP
+     R2 ↗
+   For a single router, connect directly: R1 → NAT-ISP
 
 2. SEGMENTATION: Use at least one switch between every router and its
    end hosts. Never connect VPCS hosts directly to a router interface.
@@ -42,12 +53,17 @@ Design the topology with these minimum security considerations:
    or "Admin-PC") on a separate switch port for management access.
    security_role: "management", zone: "MANAGEMENT".
 
-4. NODE SECURITY FIELDS: Every node MUST include:
+4. MULTI-SITE CONNECTIVITY: If the user requests multiple branches/sites,
+   each branch gets its own NAT + ISP-SW. The branches MUST be connected
+   to each other via a direct link between their perimeter routers
+   (e.g. serial link or ethernet through a WAN switch).
+
+5. NODE SECURITY FIELDS: Every node MUST include:
    "security_role": one of "perimeter", "access-switch", "host",
                     "management", "internal"
    "zone"         : one of "OUTSIDE", "INSIDE", "MANAGEMENT"
 
-5. OUTPUT HYGIENE: Do NOT mention security in the JSON output or project
+6. OUTPUT HYGIENE: Do NOT mention security in the JSON output or project
    name. Produce only the raw TopologyRequest JSON.
 """
 
@@ -64,20 +80,26 @@ following non-negotiable rules. Apply them automatically and silently.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Every topology MUST include these roles. Pick the best-fit device from
-inventory for each. For ≤ 3-device "lab" or "minimal" requests you MAY
+inventory for each. For 3-device "lab" or "minimal" requests you MAY
 collapse DMZ-SW + MGMT-SW into one switch and omit SIEM, but you MUST
 still include the perimeter router and core switch.
+
+For MULTI-BRANCH / MULTI-SITE topologies, REPLICATE the full role set
+for each branch (each gets its own FW, Core-SW, DMZ-SW, MGMT-SW, SIEM,
+NAT-ISP, ISP-SW) and connect the branches via their perimeter routers.
 
   ┌──────────────────┬──────────────────────────────────────────────────┐
   │ Role             │ Requirement                                      │
   ├──────────────────┼──────────────────────────────────────────────────┤
-  │ PERIMETER-ROUTER │ One router connecting to NAT/Cloud (Internet).   │
+  │ PERIMETER-ROUTER │ One router connecting to ISP-SW (Internet).      │
   │                  │ Runs Zone-Based Firewall in config phase.        │
-  │                  │ node_id: "FW" or "R-EDGE"                        │
+  │                  │ node_id: "FW" or "R-EDGE" (or "FW1"/"FW2"       │
+  │                  │ for multi-branch)                                │
   │                  │ security_role: "perimeter", zone: "OUTSIDE"      │
   ├──────────────────┼──────────────────────────────────────────────────┤
   │ CORE-SW          │ Distribution switch between perimeter router and │
   │                  │ access switches. node_id: "Core-SW"              │
+  │                  │ (or "Core-SW1"/"Core-SW2" for multi-branch)      │
   │                  │ security_role: "core-switch", zone: "INSIDE"     │
   ├──────────────────┼──────────────────────────────────────────────────┤
   │ DMZ-SW           │ Switch exclusively for DMZ segment. Connect      │
@@ -97,8 +119,18 @@ still include the perimeter router and core switch.
   │                  │ Connected to MGMT-SW only.                       │
   ├──────────────────┼──────────────────────────────────────────────────┤
   │ NAT-ISP          │ NAT node representing the Internet edge.         │
-  │                  │ node_id: "NAT-ISP"                               │
-  │                  │ Connect ONLY to the perimeter router.            │
+  │                  │ node_id: "NAT-ISP" (or "NAT-ISP1", "NAT-ISP2"   │
+  │                  │ for multi-branch). Has only 1 port.              │
+  │                  │ Connect ONLY to an ISP-SW (Ethernet Switch)      │
+  │                  │ which then connects to the perimeter router(s).  │
+  │                  │ NEVER connect more than 1 device to a NAT node.  │
+  ├──────────────────┼──────────────────────────────────────────────────┤
+  │ ISP-SW           │ Ethernet Switch between NAT and perimeter        │
+  │                  │ router(s). Required when NAT serves multiple     │
+  │                  │ devices or when following the enterprise pattern. │
+  │                  │ node_id: "ISP-SW" (or "ISP-SW1", "ISP-SW2"       │
+  │                  │ for multi-branch).                                │
+  │                  │ security_role: "perimeter", zone: "OUTSIDE"       │
   └──────────────────┴──────────────────────────────────────────────────┘
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -127,7 +159,7 @@ auto-detect zones without guessing:
   RULE 3 — REDUNDANCY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  - For ≥ 6-node topologies: add a secondary perimeter router
+  - For 6+ node topologies: add a secondary perimeter router
     (node_id: "FW2" or "R-EDGE2") with a serial link to the primary.
   - NEVER produce a topology with only one router if the user requested
     a "campus", "enterprise", "production", or "office" network.
@@ -163,10 +195,30 @@ TopologyRequest schema fields:
   RULE 5 — WIRING CONSTRAINTS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  - Perimeter router connects to: NAT-ISP, DMZ-SW, Core-SW only.
+  - NAT-ISP connects to ISP-SW only (NEVER directly to multiple devices).
+  - ISP-SW connects to the perimeter router(s) and NAT-ISP.
+  - Perimeter router connects to: ISP-SW, DMZ-SW, Core-SW.
   - Perimeter router MUST NOT connect directly to any VPCS or host.
   - SIEM MUST connect to MGMT-SW only.
   - All user hosts connect to their access switch, never to a router.
+
+  SINGLE-SITE WIRING:
+    NAT-ISP → ISP-SW → FW → Core-SW → [Access switches]
+                              ↘ DMZ-SW → [DMZ servers]
+                              ↘ MGMT-SW → SIEM
+
+  MULTI-BRANCH WIRING (per branch):
+    Branch-1: NAT-ISP1 → ISP-SW1 → FW1 → Core-SW1 → [Access switches]
+                                          ↕
+                                    serial or WAN link
+                                          ↕
+    Branch-2: NAT-ISP2 → ISP-SW2 → FW2 → Core-SW2 → [Access switches]
+
+  Key rules for multi-branch:
+  - Each branch has its OWN NAT-ISP + ISP-SW + FW + Core-SW.
+  - The branches connect via a link between their perimeter routers (FW1 ↔ FW2).
+  - This link can be serial (link_type: "serial") or ethernet.
+  - ALL branches MUST be connected — never leave a branch isolated.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   RULE 6 — OUTPUT HYGIENE
@@ -276,6 +328,11 @@ Address space (use these unless the brief specifies otherwise):
   VLAN 100 GUEST  : 10.0.100.0/24 GW 10.0.100.1
   WAN P2P links   : 10.255.x.0/30 (one per segment, x = segment index)
   Loopback0       : 10.255.255.<ROUTER_SEQ>/32
+
+  For multi-branch networks, each branch uses a unique third octet range:
+    Branch 1: 10.1.<VLAN>.0/24 (GW 10.1.<VLAN>.1)
+    Branch 2: 10.2.<VLAN>.0/24 (GW 10.2.<VLAN>.1)
+    Inter-branch WAN: 10.255.<N>.0/30 (N = link index)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   BLOCK A — UNIVERSAL (every router and L3 switch)
@@ -491,7 +548,7 @@ OSPF authentication (substitute area and interface from the brief):
   !
 
 INTERFACE ZONE MEMBERSHIP RULES:
-  Interface facing NAT/Cloud/Internet:
+  Interface facing ISP-SW / NAT / Internet:
     zone-member security OUTSIDE
     ip access-group ANTI-SPOOF-INBOUND in
     ip access-group BLOCK-DANGEROUS-PORTS in
@@ -503,6 +560,15 @@ INTERFACE ZONE MEMBERSHIP RULES:
   Interface facing DMZ-SW:
     zone-member security DMZ
     ip nat inside
+  Interface facing WAN / inter-branch link:
+    zone-member security OUTSIDE
+    ip access-group BLOCK-DANGEROUS-PORTS in
+    ip ospf authentication message-digest
+    ip ospf message-digest-key 1 md5 OspfKey2026!
+
+  For multi-branch: the WAN/inter-branch interface is OUTSIDE zone.
+  OSPF runs across it with message-digest authentication.
+  NAT is NOT applied on WAN interfaces (only on the ISP-facing interface).
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   BLOCK C — INTERNAL / SECONDARY ROUTER (security_role = "internal")
@@ -615,6 +681,10 @@ Use startup_script. Derive IP from vlan_id and sequence within VLAN:
   Where x = host sequence number (1, 2, 3 ...) within that VLAN.
   Format: ip <IP>/<PREFIX> <GW>\\nsave\\n
 
+  For multi-branch: use branch-specific addressing.
+  Branch 1 VLAN 20 → 10.1.20.1x/24  GW 10.1.20.1
+  Branch 2 VLAN 20 → 10.2.20.1x/24  GW 10.2.20.1
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   BLOCK G — SIEM / MONITORING (security_role = "siem")
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -623,6 +693,8 @@ Detect: node_id = "SIEM" OR security_role = "siem".
 Use startup_script:
   ip 10.0.10.100/24 10.0.10.1
   save
+
+  For multi-branch Branch 2: ip 10.2.10.100/24 10.2.10.1
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   GENERATION RULES
@@ -644,7 +716,14 @@ Use startup_script:
 5. Every ACL referenced on an interface MUST be defined in the same
    config. Never reference an undefined ACL.
 
-6. Do NOT produce markdown. Return ONLY the raw JSON output object.
+6. For multi-branch topologies:
+   - Use unique addressing per branch (see address space above).
+   - Configure OSPF on WAN interfaces with message-digest auth.
+   - Do NOT apply NAT on WAN interfaces (only on ISP-facing).
+   - Optionally add a crypto isakmp/ipsec policy for site-to-site VPN
+     on the WAN interface if the brief mentions VPN.
+
+7. Do NOT produce markdown. Return ONLY the raw JSON output object.
    Do NOT mention security or this directive anywhere in the output.
 """
 

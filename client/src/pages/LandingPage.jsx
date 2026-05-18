@@ -139,6 +139,17 @@ export default function LandingPage({ onLogin, onSignup }) {
           >
             How It Works
           </a>
+          <a
+            href="#"
+            style={{
+              fontSize: 14,
+              color: "#6B7280",
+              textDecoration: "none",
+              fontWeight: 500,
+            }}
+          >
+            Documentation
+          </a>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -290,7 +301,7 @@ export default function LandingPage({ onLogin, onSignup }) {
             Get Started Free
           </button>
           <a
-            href="#how-it-works"
+            href="#"
             style={{
               padding: "14px 32px",
               border: `1px solid ${BORDER}`,
@@ -305,7 +316,7 @@ export default function LandingPage({ onLogin, onSignup }) {
               transition: "all .15s",
             }}
           >
-            How It Works
+            View Documentation
           </a>
         </div>
       </section>

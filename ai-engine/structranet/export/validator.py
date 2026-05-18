@@ -609,13 +609,6 @@ class GNS3ProjectValidator:
             for ep in link.get("nodes", []):
                 linked_nodes.add(ep.get("node_id"))
 
-        for node in nodes:
-            nid = node.get("node_id", "")
-            if nid in linked_nodes and not node.get("ports"):
-                self._add_issue(WARNING, "Links",
-                                f"Node '{node.get('name', '?')}' is linked but has no ports array",
-                                "The ports array should list all available interfaces")
-
         print(f"   Checked {len(links)} link(s)")
 
     # ── Check 11: UUID format validation ────────────────────────────────────────

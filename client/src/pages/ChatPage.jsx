@@ -2,16 +2,17 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { Icon, NetworkIcon, PATHS } from "../components/Icons";
 import Sidebar from "../components/Sidebar";
 import TopologyViewer from "../components/TopologyViewer";
-import ProfileDrawer from "../components/ProfileDrawer";
+import ProfileModal from "../components/ProfileModal";
 import NetworkLoader from "../components/NetworkLoader";
 import ChatInput from "../components/ChatInput";
 import useSSE from "../hooks/useSSE";
 import { useAuth } from "../context/AuthContext";
+import MiniTopologyPreview from "../components/MiniTopologyPreview";
 import {
-  createSession, startGeneration, editAndRegenerate, approveTopology,
+  createSession, startGeneration, editTopology, approveTopology,
   downloadGns3, downloadConfigsZip, downloadRequirements,
   getChats, createChat, deleteChat, updateChatSessionId,
-  checkBackendConnection,
+  checkBackendHealth,
 } from "../lib/api";
 
 const PRIMARY = "#166534";
@@ -318,7 +319,7 @@ function DownloadCard({ icon, title, subtitle, onDownload }) {
 export default function ChatPage() {
   const { user, logout } = useAuth();
   const {
-    thoughts, topology, requirements, summary, phase, configTexts,
+    thoughts, topology, requirements, summary, phase, subPhase, configTexts,
     status, startStream, stopStream, reset,
   } = useSSE();
 
@@ -333,31 +334,43 @@ export default function ChatPage() {
   const [editText, setEditText] = useState("");
   const [profile, setProfile] = useState(null);
   const [expandedPill, setExpandedPill] = useState(null);
+  const [securityProfile, setSecurityProfile] = useState("none"); // none | basic | enterprise
+  const [showProfilePopup, setShowProfilePopup] = useState(false);
   const [backendStatus, setBackendStatus] = useState({ checked: false, express: false, fastapi: false });
 
   const messagesEndRef = useRef(null);
   const chatInputRef = useRef(null);
 
   // ── Derived state ─────────────────────────────────────────────────────────
+  // NOTE: phase from useSSE is a STRING ("generating"|"review"|"exporting"|"success"|"error"|"idle")
+  // subPhase is a separate string ("thinking"|"building"|"streaming_configs"|"generating_configs"|...)
   const isStreaming = status === "streaming";
   const isComplete = status === "complete";
-  const isReview = phase?.phase === "review";
-  const isExporting = phase?.phase === "exporting" && isStreaming;
-  const isSuccess = phase?.phase === "success" && isComplete;
-  const isError = phase?.phase === "error";
-  const isConfigStreaming = (phase?.phase === "exporting" || phase?.sub_phase === "streaming_configs" || phase?.sub_phase === "generating_configs") && isStreaming;
+  const isReview = phase === "review";
+  const isExporting = phase === "exporting" && isStreaming;
+  const isSuccess = phase === "success" && isComplete;
+  const isError = phase === "error";
+  const isConfigStreaming = (phase === "exporting" || subPhase === "streaming_configs" || subPhase === "generating_configs") && isStreaming;
   const hasTopology = topology != null;
 
   // Determine which phase we are in for display
-  const isPhase1Streaming = isStreaming && (phase?.phase === "generating" || phase?.phase === "review") && !isConfigStreaming;
+  const isPhase1Streaming = isStreaming && (phase === "generating" || phase === "review") && !isConfigStreaming;
   const isPhase2Streaming = isStreaming && isConfigStreaming;
 
   // ── Check backend connectivity on mount ──────────────────────────────────
   useEffect(() => {
-    checkBackendConnection().then((s) => {
+    checkBackendHealth().then((s) => {
       setBackendStatus({ checked: true, ...s });
+    }).catch(() => {
+      setBackendStatus({ checked: true, express: false, fastapi: false });
     });
     getChats().then(setHistory).catch(() => {});
+
+    // First-visit profile popup: show if no profile saved
+    const profileSeen = localStorage.getItem("structuranet_profile_seen");
+    if (!profileSeen) {
+      setShowProfilePopup(true);
+    }
   }, []);
 
   // ── Auto-scroll ───────────────────────────────────────────────────────────
@@ -383,23 +396,20 @@ export default function ChatPage() {
     try {
       let sid = sessionId;
       if (!sid) {
-        const sessionBody = {};
-        if (profile) {
-          sessionBody.profile = {
-            gns3_version: profile.version || "2.2",
-            supports_iou: profile.features?.iou || false,
-            supports_qemu: profile.features?.qemu || true,
-            supports_docker: profile.features?.docker || false,
-            // Pass user's custom image filenames to override appliance catalog defaults
-            template_image_map: profile.images || undefined,
-          };
-        }
-        const session = await createSession(sessionBody.profile || {});
+        const sessionProfile = profile ? {
+          gns3_version: profile.version || "2.2",
+          supports_iou: profile.features?.iou || false,
+          supports_qemu: profile.features?.qemu || true,
+          supports_docker: profile.features?.docker || false,
+          template_image_map: profile.images || undefined,
+          security_profile: securityProfile,
+        } : { security_profile: securityProfile };
+        const session = await createSession(sessionProfile);
         sid = session.session_id;
         setSessionId(sid);
       }
 
-      await startGeneration(sid, text);
+      await startGeneration(sid, text, null, securityProfile);
       startStream(sid);
 
       // Save to chat history (non-critical)
@@ -432,7 +442,7 @@ export default function ChatPage() {
     setEditMode(false);
 
     try {
-      await editAndRegenerate(sessionId, editText);
+      await editTopology(sessionId, editText);
       reset();
       startStream(sessionId);
       setMessages((prev) => [...prev, { role: "assistant", text: "" }]);
@@ -553,7 +563,7 @@ export default function ChatPage() {
           }}>
             <NetworkIcon size={14} />
           </div>
-          <span style={{ fontWeight: 700, fontSize: 15, color: "#111" }}>Structranet AI</span>
+          <span style={{ fontWeight: 700, fontSize: 15, color: "#111" }}>StructuraNet AI</span>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -819,7 +829,7 @@ export default function ChatPage() {
                   )}
 
                   {/* ─── Stream card: Topology JSON snippet ──────────────────── */}
-                  {isStreaming && phase?.phase === "generating" && (
+                  {isStreaming && phase === "generating" && (
                     <div style={{
                       border: `1px solid ${BORDER}`,
                       borderRadius: 10,
@@ -909,16 +919,13 @@ export default function ChatPage() {
                       </button>
                     </div>
 
-                    <div style={{ padding: 16, display: "flex", justifyContent: "center", gap: 24 }}>
-                      {[
-                        { label: "Nodes", value: topology.nodes?.length || 0 },
-                        { label: "Links", value: topology.links?.length || 0 },
-                      ].map(({ label, value }) => (
-                        <div key={label} style={{ textAlign: "center" }}>
-                          <div style={{ fontSize: 28, fontWeight: 700, color: PRIMARY }}>{value}</div>
-                          <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>{label}</div>
-                        </div>
-                      ))}
+                    {/* Mini SVG topology preview */}
+                    <div style={{ padding: "8px 12px" }}>
+                      <MiniTopologyPreview
+                        topology={topology}
+                        requirements={requirements}
+                        onClick={() => setTopologyOpen(true)}
+                      />
                     </div>
                   </div>
 
@@ -964,7 +971,7 @@ export default function ChatPage() {
                       onMouseOver={(e) => { e.currentTarget.style.background = "#14532D"; }}
                       onMouseOut={(e) => { e.currentTarget.style.background = PRIMARY; }}
                     >
-                      <Icon d={PATHS.check} size={15} /> Continue
+                      <Icon d={PATHS.check} size={15} /> Approve and Export
                     </button>
                   </div>
 
@@ -1216,17 +1223,53 @@ export default function ChatPage() {
           )}
         </div>
 
-        {/* ── Chat Input ──────────────────────────────────────────────────── */}
-        <ChatInput
-          ref={chatInputRef}
-          onSend={handleSend}
-          disabled={isStreaming || editMode}
-          placeholder={
-            isStreaming
-              ? "Generating topology..."
-              : "Describe a network topology..."
-          }
-        />
+        {/* ── Chat Input + Security Profile ──────────────────────────────── */}
+        <div style={{ borderTop: `1px solid ${BORDER}`, background: "white", padding: "12px 24px 16px" }}>
+          <div style={{ maxWidth: 700, margin: "0 auto" }}>
+            {/* Security profile selector — controls what security features the AI generates */}
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+              <Icon d={PATHS.shield} size={13} style={{ color: "#9CA3AF" }} />
+              <span style={{ fontSize: 11, fontWeight: 500, color: "#9CA3AF" }}>Security:</span>
+              {[
+                { key: "none", label: "None", tip: "No security configs" },
+                { key: "basic", label: "Basic", tip: "ACLs, NAT, basic firewall" },
+                { key: "enterprise", label: "Enterprise", tip: "ZBF, VPN, DAI, SNMPv3, HSRP" },
+              ].map((p) => (
+                <button
+                  key={p.key}
+                  onClick={() => setSecurityProfile(p.key)}
+                  title={p.tip}
+                  style={{
+                    border: `1px solid ${securityProfile === p.key ? PRIMARY : BORDER}`,
+                    background: securityProfile === p.key ? (p.key === "enterprise" ? PRIMARY : "rgba(22,101,52,0.06)") : "transparent",
+                    borderRadius: 14,
+                    padding: "3px 10px",
+                    fontSize: 11,
+                    fontWeight: securityProfile === p.key ? 600 : 500,
+                    color: securityProfile === p.key ? (p.key === "enterprise" ? "white" : PRIMARY) : "#6B7280",
+                    cursor: "pointer",
+                    transition: "all .15s",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <ChatInput
+              ref={chatInputRef}
+              onSend={handleSend}
+              disabled={isStreaming || editMode}
+              placeholder={
+                isStreaming
+                  ? "Generating topology..."
+                  : "Describe a network topology..."
+              }
+            />
+          </div>
+        </div>
       </div>
 
       {/* ── TopologyViewer overlay ─────────────────────────────────────────── */}
@@ -1245,12 +1288,29 @@ export default function ChatPage() {
         />
       )}
 
-      {/* ── Profile Drawer ─────────────────────────────────────────────────── */}
+      {/* ── Profile Modal (centered, per walkthrough spec) ──────────────── */}
       {profileOpen && (
-        <ProfileDrawer
-          profile={profile}
-          onUpdate={(p) => setProfile(p)}
+        <ProfileModal
           onClose={() => setProfileOpen(false)}
+          onSaved={(p) => {
+            setProfile(p);
+            localStorage.setItem("structuranet_profile_seen", "true");
+          }}
+        />
+      )}
+
+      {/* ── First-visit Profile Popup ──────────────────────────────────── */}
+      {showProfilePopup && !profileOpen && (
+        <ProfileModal
+          onClose={() => {
+            setShowProfilePopup(false);
+            localStorage.setItem("structuranet_profile_seen", "true");
+          }}
+          onSaved={(p) => {
+            setProfile(p);
+            setShowProfilePopup(false);
+            localStorage.setItem("structuranet_profile_seen", "true");
+          }}
         />
       )}
 

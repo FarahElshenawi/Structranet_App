@@ -44,12 +44,21 @@ load_dotenv()
 logger = logging.getLogger("structranet.config_agent")
 
 DEFAULT_MODEL = os.getenv("AI_MODEL", "openrouter/owl-alpha")
-MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "8192"))
+BASE_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "16384"))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Prompt builder
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _compute_phase2_max_tokens(brief: str, security_profile: str) -> int:
+    """Dynamic token limit based on brief size and security profile."""
+    base = BASE_MAX_TOKENS
+    # Larger briefs need more output
+    brief_factor = min(len(brief) // 50, 8000)
+    security_factor = 4000 if security_profile == "enterprise" else 0
+    return base + brief_factor + security_factor
+
 
 def _build_phase2_prompt(
     brief: str,
@@ -58,23 +67,30 @@ def _build_phase2_prompt(
     security_block = get_config_security_prompt(security_profile)
 
     return f"""{security_block}
-You are the Software Configuration Agent for Structranet AI.
+You are the Software Configuration Agent for Structuranet AI.
+You are a Senior Network Engineer who generates perfect Cisco IOS and VPCS
+configurations on the first attempt — no errors, no omissions.
+
 Your job is to generate IP addressing, routing, and startup configurations
 for the network topology described in the brief below.
 
 {brief}
 
-OUTPUT FORMAT:
+══════════════════════════════════════════════════════════════
+  OUTPUT FORMAT
+══════════════════════════════════════════════════════════════
+
 Return a JSON object where:
-  - Keys are node_id values from the brief (e.g., "R1", "PC1")
+  - Keys are node_id values from the brief (e.g., "R1", "PC1", "FW1")
   - Values are objects containing ONLY software config properties
-  - Do NOT include nodes that need no config (switches, hubs, NAT, cloud)
+  - Do NOT include nodes that need no config (ethernet_switch, ethernet_hub,
+    NAT, cloud, frame_relay_switch, atm_switch)
   - Do NOT include any key that starts with "_" — those are internal metadata keys
 
 Example output (Router-on-a-Stick with 3 VLANs):
 {{
   "R1": {{
-    "startup_config_content": "hostname R1\\n!\\ninterface FastEthernet0/0.10\\n encapsulation dot1Q 10\\n ip address 10.0.10.1 255.255.255.0\\n!"
+    "startup_config_content": "hostname R1\\n!\\ninterface FastEthernet0/0\\n no shutdown\\n!\\ninterface FastEthernet0/0.10\\n encapsulation dot1Q 10\\n ip address 10.0.10.1 255.255.255.0\\n!\\ninterface FastEthernet0/0.20\\n encapsulation dot1Q 20\\n ip address 10.0.20.1 255.255.255.0\\n!\\nrouter ospf 1\\n network 10.0.0.0 0.255.255.255 area 0\\n!"
   }},
   "PC1": {{
     "startup_script": "ip 10.0.10.10/24 10.0.10.1\\nsave\\n"
@@ -102,6 +118,7 @@ Rule B — ROUTER-ON-A-STICK (802.1Q SUB-INTERFACES)
       encapsulation dot1Q 10
       ip address 10.0.10.1 255.255.255.0
   Sub-interface number MUST match VLAN ID.
+  The PHYSICAL interface (e.g. FastEthernet0/0) MUST have "no shutdown".
 
 Rule C — VPCS GATEWAYS MUST MATCH THEIR VLAN SUB-INTERFACE
   Every VPCS host must use the router sub-interface IP for its VLAN
@@ -114,11 +131,25 @@ Rule D — SUBNET ALLOCATION
     VLAN 20 → 10.0.20.0/24
     VLAN 30 → 10.0.30.0/24
   (Override with security profile address space if profile != "none".)
+  For multi-branch: each branch uses its own second octet:
+    Branch 1: 10.1.<VLAN>.0/24   Branch 2: 10.2.<VLAN>.0/24
+  WAN P2P links: 10.255.<N>.0/30
 
 Rule E — SIMPLE NETWORK EXCEPTION
   If the brief states this is a "simple single-department network" or
   there is only ONE access switch, a flat subnet is acceptable and
   Router-on-a-Stick is NOT required.
+
+Rule F — WAN / INTER-BRANCH INTERFACES
+  For multi-branch topologies, the WAN link between perimeter routers
+  gets a /30 subnet. Example:
+    FW1 serial: 10.255.1.1/30   FW2 serial: 10.255.1.2/30
+  Configure OSPF across WAN links. Do NOT apply NAT on WAN interfaces.
+
+Rule G — NO SHUTDOWN ON ALL INTERFACES
+  Every interface that has an IP address MUST also have "no shutdown".
+  This is the #1 reason configs fail in GNS3 — interfaces are
+  administratively down by default on Cisco IOS.
 
 ══════════════════════════════════════════════════════════════
 
@@ -136,7 +167,8 @@ STRICT RULES:
    routers.
 8. Do NOT include markdown code fences. Return ONLY raw JSON.
 9. The JSON must start with '{{' and end with '}}'.
-10. Skip switches, hubs, NAT, and cloud nodes — no IP config needed."""
+10. Skip switches, hubs, NAT, and cloud nodes — no IP config needed.
+11. Add "no shutdown" on EVERY physical interface and sub-interface."""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -149,10 +181,12 @@ def generate_software_configs(
 ) -> Optional[Dict[str, Dict[str, Any]]]:
     client = _get_client()
     prompt = _build_phase2_prompt(brief, security_profile=security_profile)
+    max_tokens = _compute_phase2_max_tokens(brief, security_profile)
     logger.info(
-        "Calling Phase 2 LLM (model=%s, security_profile=%s) ...",
+        "Calling Phase 2 LLM (model=%s, security_profile=%s, max_tokens=%d) ...",
         DEFAULT_MODEL,
         security_profile,
+        max_tokens,
     )
 
     # Strategy 1: JSON mode
@@ -164,7 +198,7 @@ def generate_software_configs(
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": "Generate the software configurations now."},
                 ],
-                max_tokens=MAX_TOKENS,
+                max_tokens=max_tokens,
                 response_format={"type": "json_object"},
             )
 
@@ -211,7 +245,7 @@ def generate_software_configs(
                         "content": "Generate the software configurations now. Return ONLY raw JSON.",
                     },
                 ],
-                max_tokens=MAX_TOKENS,
+                max_tokens=max_tokens,
             )
 
         response = _call_with_retry(_plain_call)

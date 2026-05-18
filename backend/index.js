@@ -38,10 +38,22 @@ connectDB();
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-key";
 
-/* ================= MANUAL FASTAPI PROXY ================= */
-// Replaces broken http-proxy-middleware with a working fetch-based proxy.
-// Express strips /api/ai from the mounted path, so /api/ai/sessions → /sessions
-// We forward /sessions to http://localhost:8000/sessions
+/* ═══════════════════════════════════════════════════════════════════════
+   MANUAL FASTAPI PROXY
+   ═══════════════════════════════════════════════════════════════════════
+
+   Replaces broken http-proxy-middleware with a working fetch-based proxy.
+   Express strips /api/ai from the mounted path, so /api/ai/sessions → /sessions
+   We forward /sessions to http://localhost:8000/sessions
+
+   Handles three proxy patterns:
+     1. SSE (/events) — streams text/event-stream
+     2. Downloads (/download) — streams binary files
+     3. Regular JSON — forwards request/response
+
+   SSE Auth pattern: EventSource doesn't support custom headers.
+   Auth uses ?token=xxx query param which we forward as Authorization header.
+   ═══════════════════════════════════════════════════════════════════════ */
 
 app.use("/api/ai", async (req, res) => {
   const targetPath = req.originalUrl.replace(/^\/api\/ai/, "") || "/";
@@ -55,7 +67,7 @@ app.use("/api/ai", async (req, res) => {
   else if (req.headers.authorization) headers["authorization"] = req.headers.authorization;
 
   try {
-    // SSE endpoint — stream the response
+    // ── SSE endpoint — stream the response ──────────────────────────────
     if (targetPath.includes("/events")) {
       const sseRes = await fetch(targetUrl, {
         method: "GET",
@@ -94,7 +106,7 @@ app.use("/api/ai", async (req, res) => {
       return;
     }
 
-    // File download endpoints — stream binary
+    // ── File download endpoints — stream binary ─────────────────────────
     if (targetPath.includes("/download")) {
       const dlRes = await fetch(targetUrl, { method: "GET", headers });
       if (!dlRes.ok) {
@@ -109,7 +121,7 @@ app.use("/api/ai", async (req, res) => {
       return res.send(Buffer.from(buffer));
     }
 
-    // Regular JSON endpoints
+    // ── Regular JSON endpoints ──────────────────────────────────────────
     const fetchOptions = {
       method: req.method,
       headers,
@@ -133,7 +145,9 @@ app.use("/api/ai", async (req, res) => {
   }
 });
 
-/* ================= AUTH ================= */
+/* ═══════════════════════════════════════════════════════════════════════
+   AUTH — JWT-based authentication
+   ═══════════════════════════════════════════════════════════════════════ */
 
 app.post("/api/auth/signup", async (req, res) => {
   try {
@@ -171,6 +185,13 @@ app.post("/api/auth/demo", async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Demo login failed" }); }
 });
 
+/**
+ * requireAuth middleware
+ *
+ * Accepts tokens from both:
+ *   - Authorization: Bearer xxx header
+ *   - ?token=xxx query parameter (for SSE / EventSource connections)
+ */
 const requireAuth = (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
@@ -182,7 +203,9 @@ const requireAuth = (req, res, next) => {
   } catch (err) { return res.status(401).json({ error: "Invalid token" }); }
 };
 
-/* ================= API ================= */
+/* ═══════════════════════════════════════════════════════════════════════
+   CHAT API — CRUD for chat history
+   ═══════════════════════════════════════════════════════════════════════ */
 
 app.post("/api/chats", requireAuth, async (req, res) => {
   if (mongoose.connection.readyState !== 1) return res.status(201).json({ _id: "chat-" + Date.now(), userId: req.userId, messages: [{ role: "user", content: req.body.text || "" }], createdAt: new Date().toISOString() });
@@ -227,19 +250,111 @@ app.put("/api/chats/:chatId/session", requireAuth, async (req, res) => {
   catch (e) { res.status(500).json({ error: "Failed" }); }
 });
 
+/* ═══════════════════════════════════════════════════════════════════════
+   PROFILE API — GNS3 environment profile
+
+   Walkthrough spec:
+     PUT /api/profile with { version, features, images, security_profile }
+     images is a MAP: {"Cisco 7200": "c7200-adventerprisek9-mz.124-24.T5.image", ...}
+     This images map becomes template_image_map when creating AI sessions.
+     Priority: Profile image name > appliance.py default
+
+   The User model stores images as a Mongoose Map<String, String>.
+   When reading, we convert from Mongoose Map to a plain JS object
+   so the frontend receives a normal JSON object (not a Map instance).
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Helper: Convert Mongoose Map to plain object for JSON serialization
+ */
+function profileToPlain(profile) {
+  if (!profile) return {};
+  return {
+    version: profile.version || "",
+    features: profile.features
+      ? { iou: !!profile.features.iou, qemu: !!profile.features.qemu, docker: !!profile.features.docker }
+      : { iou: false, qemu: true, docker: false },
+    // Mongoose Map → plain JS object
+    images: profile.images instanceof Map
+      ? Object.fromEntries(profile.images)
+      : (profile.images || {}),
+    security_profile: profile.security_profile || "none",
+  };
+}
+
 app.get("/api/profile", requireAuth, async (req, res) => {
   if (mongoose.connection.readyState !== 1) return res.json({ profile: {} });
-  try { const user = await User.findById(req.userId).select("gns3Profile"); res.json({ profile: user?.gns3Profile || {} }); }
-  catch (e) { res.status(500).json({ error: "Failed" }); }
+  try {
+    const user = await User.findById(req.userId).select("gns3Profile");
+    res.json({ profile: profileToPlain(user?.gns3Profile) });
+  } catch (e) { res.status(500).json({ error: "Failed" }); }
 });
 
 app.put("/api/profile", requireAuth, async (req, res) => {
   if (mongoose.connection.readyState !== 1) return res.json({ profile: req.body });
-  try { const { version, features, images } = req.body; const user = await User.findById(req.userId); if (!user) return res.status(404); if (!user.gns3Profile) user.gns3Profile = {}; if (version !== undefined) user.gns3Profile.version = version; if (features) user.gns3Profile.features = { ...user.gns3Profile.features, ...features }; if (images) user.gns3Profile.images = images; await user.save(); res.json({ profile: user.gns3Profile }); }
-  catch (e) { res.status(500).json({ error: "Failed" }); }
+  try {
+    const { version, features, images, security_profile } = req.body;
+    const user = await User.findById(req.userId);
+    if (!user) return res.status(404);
+
+    if (!user.gns3Profile) user.gns3Profile = {};
+
+    if (version !== undefined) user.gns3Profile.version = version;
+    if (features) user.gns3Profile.features = { ...user.gns3Profile.features, ...features };
+
+    // images: accept plain object, store as Mongoose Map
+    // Frontend sends: { "Cisco 7200": "c7200-adventerprisek9-mz.124-24.T5.image" }
+    if (images !== undefined) {
+      if (typeof images === "object" && images !== null) {
+        // Convert plain object to Map for Mongoose Map type
+        const map = new Map(Object.entries(images));
+        user.gns3Profile.images = map;
+      } else {
+        user.gns3Profile.images = new Map();
+      }
+    }
+
+    // security_profile: "none" | "basic" | "enterprise"
+    if (security_profile !== undefined) {
+      const valid = ["none", "basic", "enterprise"];
+      user.gns3Profile.security_profile = valid.includes(security_profile)
+        ? security_profile
+        : "none";
+    }
+
+    await user.save();
+    res.json({ profile: profileToPlain(user.gns3Profile) });
+  } catch (e) { res.status(500).json({ error: "Failed" }); }
 });
 
-/* ================= HEALTH ================= */
+/* ═══════════════════════════════════════════════════════════════════════
+   APPLIANCE CATALOG — Proxy to FastAPI /catalog
+
+   The profile popup's "Search appliance name" feature needs the full
+   appliance catalog. This endpoint fetches it from FastAPI and returns
+   it to the frontend for the search/typeahead dropdown.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+app.get("/api/catalog", requireAuth, async (req, res) => {
+  try {
+    const catalogRes = await fetch(`${FASTAPI_URL}/catalog`, {
+      headers: { authorization: req.headers.authorization },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!catalogRes.ok) {
+      return res.status(catalogRes.status).json({ error: `Catalog fetch failed: ${catalogRes.status}` });
+    }
+    const data = await catalogRes.json();
+    res.json(data);
+  } catch (e) {
+    console.error("Catalog proxy error:", e.message);
+    res.status(502).json({ error: "AI engine unavailable for catalog", detail: e.message });
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   HEALTH CHECK
+   ═══════════════════════════════════════════════════════════════════════ */
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", service: "express", db: mongoose.connection.readyState === 1 ? "connected" : "disconnected" });
@@ -256,4 +371,5 @@ app.get("/api/ai/health", async (req, res) => {
 app.listen(port, () => {
   console.log(`🚀 Server running on port ${port}`);
   console.log(`📡 Proxying /api/ai → ${FASTAPI_URL} (manual fetch proxy)`);
+  console.log(`📋 Catalog endpoint: /api/catalog → ${FASTAPI_URL}/catalog`);
 });

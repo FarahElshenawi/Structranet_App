@@ -49,6 +49,13 @@ export async function register({ username, email, password }) {
   });
 }
 
+export async function demoLogin() {
+  return request("/api/auth/demo", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 // ─── Chat history (Express /api/*) ────────────────────────────────────────────
 export async function getChats() {
   const data = await request("/api/userchats");

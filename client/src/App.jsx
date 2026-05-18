@@ -5,13 +5,11 @@ import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
 import ChatPage from "./pages/ChatPage";
 
-const BORDER = "#E5E7EB";
-
 function AppContent() {
   const { user, loading } = useAuth();
   const [page, setPage] = useState("landing"); // landing | login | register | chat
 
-  // Still checking token
+  // Still checking auth state (e.g. during login/register/demo)
   if (loading) {
     return (
       <div

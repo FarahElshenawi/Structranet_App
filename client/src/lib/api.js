@@ -221,14 +221,32 @@ export const downloadRequirements = (sid, name = "network") =>
   downloadBlob(`/api/ai/sessions/${sid}/download/requirements`, `${name}_requirements.json`);
 
 // ─── Health ───────────────────────────────────────────────────────────────────
+/**
+ * Create an AbortSignal with a timeout in a cross-browser compatible way.
+ * Falls back gracefully if AbortSignal.timeout is not available.
+ */
+function createTimeoutSignal(ms) {
+  try {
+    if (typeof AbortSignal.timeout === "function") {
+      return AbortSignal.timeout(ms);
+    }
+  } catch {
+    // AbortSignal.timeout not supported
+  }
+  // Fallback: use AbortController with manual setTimeout
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), ms);
+  return controller.signal;
+}
+
 export async function checkBackendHealth() {
   try {
     const express = await fetch("/api/health", {
-      signal: AbortSignal.timeout(4000),
+      signal: createTimeoutSignal(4000),
     }).then((r) => r.ok).catch(() => false);
 
     const fastapi = await fetch("/api/ai/health", {
-      signal: AbortSignal.timeout(4000),
+      signal: createTimeoutSignal(4000),
     }).then((r) => r.ok).catch(() => false);
 
     return { express, fastapi };

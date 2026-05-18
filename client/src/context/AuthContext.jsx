@@ -12,30 +12,46 @@ export function AuthProvider({ children }) {
       return null;
     }
   });
+  const [loading, setLoading] = useState(false);
 
   const login = useCallback(async ({ email, password }) => {
-    const data = await apiLogin({ email, password });
-    localStorage.setItem("token", data.token);
-    localStorage.setItem("user", JSON.stringify(data.user));
-    setUser(data.user);
-    return data;
+    setLoading(true);
+    try {
+      const data = await apiLogin({ email, password });
+      localStorage.setItem("token", data.token);
+      localStorage.setItem("user", JSON.stringify(data.user));
+      setUser(data.user);
+      return data;
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   const registerUser = useCallback(async ({ username, email, password }) => {
-    await apiRegister({ username, email, password });
-    const loginData = await apiLogin({ email, password });
-    localStorage.setItem("token", loginData.token);
-    localStorage.setItem("user", JSON.stringify(loginData.user));
-    setUser(loginData.user);
-    return loginData;
+    setLoading(true);
+    try {
+      await apiRegister({ username, email, password });
+      const loginData = await apiLogin({ email, password });
+      localStorage.setItem("token", loginData.token);
+      localStorage.setItem("user", JSON.stringify(loginData.user));
+      setUser(loginData.user);
+      return loginData;
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   const demoLogin = useCallback(async () => {
-    const data = await apiDemoLogin();
-    localStorage.setItem("token", data.token);
-    localStorage.setItem("user", JSON.stringify(data.user));
-    setUser(data.user);
-    return data;
+    setLoading(true);
+    try {
+      const data = await apiDemoLogin();
+      localStorage.setItem("token", data.token);
+      localStorage.setItem("user", JSON.stringify(data.user));
+      setUser(data.user);
+      return data;
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   const logout = useCallback(() => {
@@ -45,7 +61,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, login, registerUser, demoLogin, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, registerUser, demoLogin, logout }}>
       {children}
     </AuthContext.Provider>
   );

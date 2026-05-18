@@ -56,9 +56,9 @@ export default function ProfileModal({ onClose, onSaved }) {
         const p = data.profile || {};
         setVersion(p.version || "");
         setFeatures(
-          p.features || { iou: false, qemu: true, docker: false }
+          p.features && typeof p.features === "object" ? p.features : { iou: false, qemu: true, docker: false }
         );
-        setImages(p.images || []);
+        setImages(Array.isArray(p.images) ? p.images : []);
       })
       .catch(() => {
         // Profile not set yet — keep defaults
@@ -86,10 +86,11 @@ export default function ProfileModal({ onClose, onSaved }) {
   }, []);
 
   // ── Filtered catalog for search ──
+  const safeImages = Array.isArray(images) ? images : [];
   const filteredCatalog = APPLIANCE_CATALOG.filter(
     (a) =>
       a.name.toLowerCase().includes(searchQuery.toLowerCase()) &&
-      !images.some((img) => img.name === a.name)
+      !safeImages.some((img) => img.name === a.name)
   );
 
   // ── Highlight matching text ──
@@ -411,7 +412,7 @@ export default function ProfileModal({ onClose, onSaved }) {
           </div>
 
           {/* Installed Images */}
-          {images.length > 0 && (
+          {safeImages.length > 0 && (
             <div>
               <label
                 style={{
@@ -423,10 +424,10 @@ export default function ProfileModal({ onClose, onSaved }) {
                   marginBottom: 8,
                 }}
               >
-                INSTALLED IMAGES ({images.length})
+                INSTALLED IMAGES ({safeImages.length})
               </label>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {images.map((img, i) => (
+                {safeImages.map((img, i) => (
                   <div
                     key={i}
                     style={{

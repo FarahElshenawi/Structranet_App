@@ -1259,7 +1259,6 @@ export default function ChatPage() {
               ))}
             </div>
             <ChatInput
-              ref={chatInputRef}
               onSend={handleSend}
               disabled={isStreaming || editMode}
               placeholder={
@@ -1315,15 +1314,17 @@ export default function ChatPage() {
       )}
 
       {/* ── Sidebar ────────────────────────────────────────────────────────── */}
-      {sidebarOpen && (
-        <Sidebar
-          history={history}
-          onSelect={handleSelectHistory}
-          onDelete={handleDeleteChat}
-          onNewChat={handleNewChat}
-          onClose={() => setSidebarOpen(false)}
-        />
-      )}
+      <Sidebar
+        open={sidebarOpen}
+        history={history}
+        onSelect={handleSelectHistory}
+        onDelete={handleDeleteChat}
+        onNewChat={handleNewChat}
+        onClose={() => setSidebarOpen(false)}
+        onOpenProfile={() => setProfileOpen(true)}
+        onLogout={logout}
+        user={user}
+      />
     </div>
   );
 }

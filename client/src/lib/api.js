@@ -88,6 +88,11 @@ export async function deleteChat(chatId) {
   return request(`/api/chats/${chatId}`, { method: "DELETE" });
 }
 
+// ─── Appliance Catalog (Express /api/catalog → FastAPI /catalog) ─────────────
+export async function getCatalog() {
+  return request("/api/catalog");
+}
+
 // ─── User profile (Express /api/profile) ─────────────────────────────────────
 export async function getUserProfile() {
   return request("/api/profile");
@@ -159,6 +164,16 @@ export async function approveTopology(sessionId) {
   });
 }
 
+// ─── Conversational Agent (LLM Tool Calling) ──────────────────────────────────
+// Single endpoint for all chat interactions — the LLM decides which tools to call.
+// Replaces the old FSM endpoints (startGeneration, editTopology, approveTopology).
+export async function agentChat(sessionId, message) {
+  return request(`/api/ai/agent/chat`, {
+    method: "POST",
+    body: JSON.stringify({ session_id: sessionId, message }),
+  });
+}
+
 // ─── SSE Streaming ────────────────────────────────────────────────────────────
 // FIX: EventSource cannot set custom headers.
 // Pass JWT token as ?token= query param — Express requireAuth accepts it.
@@ -172,7 +187,7 @@ export function subscribeSSE(sessionId, handlers, onConnectionError) {
   const EVENTS = [
     "phase_change", "thought", "topology_ready", "requirements_ready",
     "summary_ready", "phase2_progress", "export_progress", "config_text",
-    "complete", "error", "keepalive",
+    "agent_message", "complete", "error", "keepalive",
   ];
 
   EVENTS.forEach((name) => {

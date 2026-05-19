@@ -25,6 +25,8 @@ export default function useSSE() {
   const [subPhase,     setSubPhase]     = useState(null);       // thinking|building|streaming_configs|…
   const [status,       setStatus]       = useState("idle");     // idle|streaming|review|exporting|complete|error
   const [exportData,   setExportData]   = useState(null);       // ExportResponse
+  const [agentMessage, setAgentMessage] = useState("");         // LLM's text response via tool calling
+  const [toolCallsMade,setToolCallsMade]= useState([]);         // Which tools the LLM called
   const esRef = useRef(null);
 
   const reset = useCallback(() => {
@@ -37,6 +39,8 @@ export default function useSSE() {
     setSubPhase(null);
     setStatus("idle");
     setExportData(null);
+    setAgentMessage("");
+    setToolCallsMade([]);
     esRef.current?.close();
     esRef.current = null;
   }, []);
@@ -123,6 +127,12 @@ export default function useSSE() {
         console.error("[SSE] pipeline error:", message);
       },
 
+      // { message, tool_calls_made } — LLM's final text response after tool calling
+      agent_message: ({ message, tool_calls_made }) => {
+        if (message) setAgentMessage(message);
+        if (tool_calls_made?.length) setToolCallsMade(tool_calls_made);
+      },
+
       keepalive: () => {
         // heartbeat — no-op
       },
@@ -150,6 +160,8 @@ export default function useSSE() {
     subPhase,
     status,
     exportData,
+    agentMessage,
+    toolCallsMade,
     // Actions
     startStream,
     stopStream,

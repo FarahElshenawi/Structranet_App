@@ -6,31 +6,11 @@ const PRIMARY_HOVER = "#14532D";
 const BORDER = "#E5E7EB";
 const MUTED = "#F3F4F6";
 
-// ── Appliance catalog for search ──
-const APPLIANCE_CATALOG = [
-  { name: "c7200", type: "Dynamips" },
-  { name: "c3745", type: "Dynamips" },
-  { name: "c3660", type: "Dynamips" },
-  { name: "c3600", type: "Dynamips" },
-  { name: "c2600", type: "Dynamips" },
-  { name: "c1700", type: "Dynamips" },
-  { name: "i86bi_linux_l2-adventerprisek9-ms", type: "IOU" },
-  { name: "i86bi_linux_l3-adventerprisek9-ms", type: "IOU" },
-  { name: "i86bi_linux_l2-ipbasek9-ms", type: "IOU" },
-  { name: "csr1000v", type: "QEMU" },
-  { name: "nxosv9k", type: "QEMU" },
-  { name: "asav", type: "QEMU" },
-  { name: "vios", type: "QEMU" },
-  { name: "vIOS-L2", type: "QEMU" },
-  { name: "vpcs", type: "VPCS" },
-  { name: "alpine", type: "Docker" },
-  { name: "ubuntu", type: "Docker" },
-  { name: "ovs", type: "Docker" },
-  { name: "ethernet_switch", type: "Built-in" },
-  { name: "ethernet_hub", type: "Built-in" },
-  { name: "Nat", type: "Built-in" },
-  { name: "cloud", type: "Built-in" },
-];
+// ── Helper: build auth headers inline (mirrors api.js authHeaders) ──
+function authHeaders(extra = {}) {
+  const t = localStorage.getItem("token");
+  return t ? { Authorization: `Bearer ${t}`, ...extra } : extra;
+}
 
 export default function ProfileModal({ onClose, onSaved }) {
   const [version, setVersion] = useState("");
@@ -39,6 +19,9 @@ export default function ProfileModal({ onClose, onSaved }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  // Catalog loaded from /api/catalog
+  const [catalog, setCatalog] = useState([]);
+
   // Search state
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedAppliance, setSelectedAppliance] = useState(null);
@@ -46,6 +29,23 @@ export default function ProfileModal({ onClose, onSaved }) {
   const [showDropdown, setShowDropdown] = useState(false);
   const searchRef = useRef(null);
   const dropdownRef = useRef(null);
+
+  // ── Load catalog from API on mount ──
+  useEffect(() => {
+    fetch("/api/catalog", { headers: authHeaders() })
+      .then((r) => r.json())
+      .then((data) => {
+        const raw = Array.isArray(data) ? data : [];
+        // Map backend shape {name, gns3_type, category, port_count}
+        // to dropdown shape {name, type}
+        const mapped = raw.map((item) => ({
+          name: item.name,
+          type: item.gns3_type || item.type || "Unknown",
+        }));
+        setCatalog(mapped);
+      })
+      .catch(() => setCatalog([]));
+  }, []);
 
   // ── Load profile on mount ──
   useEffect(() => {
@@ -58,7 +58,16 @@ export default function ProfileModal({ onClose, onSaved }) {
         setFeatures(
           p.features && typeof p.features === "object" ? p.features : { iou: false, qemu: true, docker: false }
         );
-        setImages(Array.isArray(p.images) ? p.images : []);
+        // Convert from backend object format to array format
+        let imageArray = [];
+        if (p.images) {
+          if (Array.isArray(p.images)) {
+            imageArray = p.images;
+          } else if (typeof p.images === "object") {
+            imageArray = Object.entries(p.images).map(([name, filename]) => ({ name, filename }));
+          }
+        }
+        setImages(imageArray);
       })
       .catch(() => {
         // Profile not set yet — keep defaults
@@ -87,7 +96,7 @@ export default function ProfileModal({ onClose, onSaved }) {
 
   // ── Filtered catalog for search ──
   const safeImages = Array.isArray(images) ? images : [];
-  const filteredCatalog = APPLIANCE_CATALOG.filter(
+  const filteredCatalog = catalog.filter(
     (a) =>
       a.name.toLowerCase().includes(searchQuery.toLowerCase()) &&
       !safeImages.some((img) => img.name === a.name)

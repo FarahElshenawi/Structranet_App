@@ -228,7 +228,7 @@ const nodeColors = {
   docker:  { fill: "rgba(99,102,241,0.08)", stroke: "rgba(99,102,241,0.45)", text: "#4338CA" },
 };
 
-export default function TopologyViewer({ topology, requirements, onClose, onEdit, onApprove, isReview }) {
+export default function TopologyViewer({ topology, requirements, onClose }) {
   const [selected, setSelected] = useState(null);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -377,64 +377,6 @@ export default function TopologyViewer({ topology, requirements, onClose, onEdit
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {/* Edit button */}
-          {isReview && onEdit && (
-            <button
-              onClick={onEdit}
-              style={{
-                border: `1px solid ${BORDER}`,
-                background: "white",
-                borderRadius: 8,
-                padding: "8px 16px",
-                fontSize: 13,
-                fontWeight: 500,
-                color: "#374151",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                transition: "all .15s",
-              }}
-              onMouseOver={(e) => {
-                e.currentTarget.style.borderColor = PRIMARY;
-                e.currentTarget.style.color = PRIMARY;
-              }}
-              onMouseOut={(e) => {
-                e.currentTarget.style.borderColor = BORDER;
-                e.currentTarget.style.color = "#374151";
-              }}
-            >
-              <Icon d={PATHS.pencil} size={14} /> Edit Topology
-            </button>
-          )}
-          {/* Continue / Approve button */}
-          {isReview && onApprove && (
-            <button
-              onClick={onApprove}
-              style={{
-                border: "none",
-                background: PRIMARY,
-                borderRadius: 8,
-                padding: "8px 16px",
-                fontSize: 13,
-                fontWeight: 600,
-                color: "white",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                transition: "all .15s",
-              }}
-              onMouseOver={(e) => {
-                e.currentTarget.style.background = "#14532D";
-              }}
-              onMouseOut={(e) => {
-                e.currentTarget.style.background = PRIMARY;
-              }}
-            >
-              <Icon d={PATHS.check} size={14} /> Continue
-            </button>
-          )}
           {/* Close / Minimize button */}
           <button
             onClick={onClose}

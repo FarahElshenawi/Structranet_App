@@ -2,11 +2,13 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import useSSE from "../hooks/useSSE";
 import { useAuth } from "../context/AuthContext";
 import MiniTopologyPreview from "../components/MiniTopologyPreview";
+import ProfileModal from "../components/ProfileModal";
+import TopologyViewer from "../components/TopologyViewer";
 import {
-  createSession, startGeneration, editTopology, approveTopology,
+  createSession, agentChat,
   downloadGns3, downloadConfigsZip, downloadRequirements,
   getChats, createChat, deleteChat, updateChatSessionId,
-  checkBackendHealth, getChat,
+  checkBackendHealth, getChat, getUserProfile,
 } from "../lib/api";
 
 // ── Design tokens (from reference §3.3) ──────────────────────────────────────
@@ -15,6 +17,7 @@ const GH = "#14532D";  // PRIMARY_HOVER
 const BG = "#F9FAFB";
 const BD = "#E5E7EB";
 const MT = "#F3F4F6";
+const SIDEBAR_W = 300; // §12 spec: 300px sidebar width
 
 // ── Thought type labels & colours ─────────────────────────────────────────────
 const THOUGHT_TYPE = {
@@ -83,6 +86,7 @@ const IC = {
   plus:     "M12 5v14M5 12h14",
   expand:   "M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3",
   settings: "M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z",
+  search:   "M21 21l-6-6m2-5a7 7 0 1 1-14 0 7 7 0 0 1 14 0",
 };
 
 // ── Pulsing ring loader ────────────────────────────────────────────────────────
@@ -233,7 +237,7 @@ function ReqSummary({ requirements }) {
               fontSize: 10, fontFamily: "monospace", color: "#6B7280",
               maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
             }}>
-              {r.image_file || (r.image_required ? "⚠ not configured" : "built-in")}
+              {r.image_file || (r.image_required ? "\u26A0 not configured" : "built-in")}
             </span>
           </div>
         ))}
@@ -259,6 +263,157 @@ function AIAvatar({ animate }) {
   );
 }
 
+// ── Typing indicator (pulsing dots) ──────────────────────────────────────────
+function TypingIndicator() {
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 8,
+      marginBottom: 12,
+    }}>
+      <PulseRing/>
+      <span style={{
+        fontSize: 13, color: "#6B7280",
+        animation: "typFade 1.5s ease-in-out infinite",
+      }}>
+        AI is thinking...
+      </span>
+      <style>{`@keyframes typFade{0%,100%{opacity:1}50%{opacity:.5}}`}</style>
+    </div>
+  );
+}
+
+// ── Security profile picker (inline in AIBubble review area) ──────────────────
+const SECURITY_PROFILES = [
+  {
+    id: "none",
+    label: "No hardening (lab)",
+    desc: "No hardening \u2014 clean configs only",
+    icon: "\uD83D\uDCC4",
+  },
+  {
+    id: "basic",
+    label: "Basic (SSH, AAA)",
+    desc: "SSH, AAA, NTP, Syslog",
+    icon: "\uD83D\uDD12",
+  },
+  {
+    id: "enterprise",
+    label: "Enterprise (Full ZBF, ACLs)",
+    desc: "Full ZBF, ACLs, SNMPv3, HSRP",
+    icon: "\uD83D\uDEE1\uFE0F",
+  },
+];
+
+function SecurityProfilePicker({ selectedProfile, onSelectProfile, onConfirm, onCancel }) {
+  return (
+    <div style={{
+      border: `1px solid ${BD}`, borderRadius: 10,
+      overflow: "hidden", marginBottom: 16,
+      background: "white",
+    }}>
+      <div style={{
+        padding: "10px 14px",
+        borderBottom: `1px solid ${BD}`,
+        background: "#FAFAFA",
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Ic d={IC.shield} size={14} color={G}/>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "#111" }}>
+            Select security profile
+          </span>
+        </div>
+        <button
+          onClick={onCancel}
+          style={{
+            border: "none", background: "transparent",
+            cursor: "pointer", color: "#9CA3AF", padding: 2,
+            display: "flex", alignItems: "center",
+          }}
+        >
+          <Ic d={IC.x} size={13}/>
+        </button>
+      </div>
+      <div style={{ padding: "10px 10px 6px" }}>
+        {/* Radio-style buttons in a row */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          {SECURITY_PROFILES.map((p) => {
+            const isSelected = selectedProfile === p.id;
+            return (
+              <button
+                key={p.id}
+                onClick={() => onSelectProfile(p.id)}
+                style={{
+                  flex: 1, textAlign: "center",
+                  border: `1px solid ${isSelected ? "#BBF7D0" : BD}`,
+                  background: isSelected ? "#F0FDF4" : "white",
+                  borderRadius: 8, padding: "10px 8px",
+                  cursor: "pointer", transition: "all .15s",
+                  display: "flex", flexDirection: "column",
+                  alignItems: "center", gap: 4,
+                }}
+              >
+                <span style={{ fontSize: 20, lineHeight: 1 }}>{p.icon}</span>
+                <span style={{
+                  fontSize: 11, fontWeight: 600,
+                  color: isSelected ? G : "#374151",
+                }}>
+                  {p.label}
+                </span>
+                <span style={{ fontSize: 9, color: "#9CA3AF", lineHeight: 1.3 }}>
+                  {p.desc}
+                </span>
+                {/* Radio dot */}
+                <div style={{
+                  width: 14, height: 14, borderRadius: "50%",
+                  border: `2px solid ${isSelected ? G : BD}`,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  marginTop: 2,
+                }}>
+                  {isSelected && (
+                    <div style={{
+                      width: 6, height: 6, borderRadius: "50%", background: G,
+                    }}/>
+                  )}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        {/* Confirm / Cancel buttons */}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button
+            onClick={onCancel}
+            style={{
+              border: `1px solid ${BD}`, background: "white",
+              borderRadius: 8, padding: "8px 16px",
+              fontSize: 13, fontWeight: 500, color: "#6B7280",
+              cursor: "pointer", fontFamily: "inherit",
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            style={{
+              border: "none", background: G,
+              borderRadius: 8, padding: "8px 20px",
+              fontSize: 13, fontWeight: 600, color: "white",
+              cursor: "pointer", fontFamily: "inherit",
+              display: "flex", alignItems: "center", gap: 5,
+              transition: "background .15s",
+            }}
+            onMouseOver={(e) => { e.currentTarget.style.background = GH; }}
+            onMouseOut={(e) => { e.currentTarget.style.background = G; }}
+          >
+            <Ic d={IC.check} size={13}/> Confirm Export
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  The AI message bubble — renders ALL pipeline output inline
 //  This is the core of the Claude-like experience.
@@ -274,10 +429,12 @@ function AIBubble({
   subPhase,
   status,
   exportData,
+  agentMessage,    // LLM's text response (from Tool Calling)
+  toolCallsMade,   // which tools the LLM called
   isActive,        // true = this is the current live bubble
   onOpenTopology,
   onEdit,
-  onApprove,
+  onApprove,       // (securityProfileId) => void
   sessionId,
   projectName,
 }) {
@@ -290,6 +447,13 @@ function AIBubble({
   // Which device is currently streaming (last one added)
   const activeDevice  = deviceNames[deviceNames.length - 1] || null;
 
+  // Security profile picker state
+  const [securityPickerOpen, setSecurityPickerOpen] = useState(false);
+  const [selectedProfile, setSelectedProfile] = useState("none");
+
+  // Whether this bubble has any visible content yet
+  const hasContent = agentMessage || thoughts.length > 0 || topology || deviceNames.length > 0 || toolCallsMade?.length > 0;
+
   // Phase label shown while generating
   const phaseLabel = useMemo(() => {
     if (subPhase === "thinking" || phase === "generating") return "Analyzing your network requirements...";
@@ -300,11 +464,65 @@ function AIBubble({
     return "Processing...";
   }, [phase, subPhase]);
 
+  // Handle security profile confirmation
+  const handleSecurityConfirm = useCallback(() => {
+    setSecurityPickerOpen(false);
+    onApprove(selectedProfile);
+  }, [onApprove, selectedProfile]);
+
+  // Handle security profile cancellation
+  const handleSecurityCancel = useCallback(() => {
+    setSecurityPickerOpen(false);
+    setSelectedProfile("none");
+  }, []);
+
   return (
     <div style={{ display: "flex", gap: 12, marginBottom: 24, alignItems: "flex-start" }}>
       <AIAvatar animate={isActive && isStreaming}/>
 
       <div style={{ flex: 1, minWidth: 0 }}>
+        {/* ── Typing indicator: shown immediately when active but no content yet ── */}
+        {isActive && isStreaming && !hasContent && (
+          <TypingIndicator />
+        )}
+
+        {/* ── Tool call badges (shown during streaming AND after) ── */}
+        {toolCallsMade?.length > 0 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+            {toolCallsMade.map((tool, i) => {
+              const TOOL_STYLE = {
+                generate_new_topology:     { label: "Generated Topology",   bg: "#F0FDF4", border: "#BBF7D0", color: G },
+                modify_current_topology:   { label: "Modified Topology",    bg: "#EFF6FF", border: "#BFDBFE", color: "#1D4ED8" },
+                apply_security_and_export: { label: "Applied Security",     bg: "#FFF7ED", border: "#FED7AA", color: "#C2410C" },
+                search_cisco_knowledge:    { label: "Searched Knowledge",   bg: "#FAF5FF", border: "#E9D5FF", color: "#7C3AED" },
+              };
+              const ts = TOOL_STYLE[tool] || { label: tool, bg: MT, border: BD, color: "#6B7280" };
+              return (
+                <span key={i} style={{
+                  fontSize: 10, fontWeight: 600,
+                  padding: "2px 8px", borderRadius: 4,
+                  background: ts.bg, border: `1px solid ${ts.border}`,
+                  color: ts.color, fontFamily: "monospace",
+                  letterSpacing: "0.02em",
+                }}>
+                  {ts.label}
+                </span>
+              );
+            })}
+          </div>
+        )}
+
+        {/* ── LLM text response (shown DURING streaming too) ── */}
+        {agentMessage && (
+          <div style={{
+            fontSize: 14, color: "#374151", lineHeight: 1.7,
+            marginBottom: 16, whiteSpace: "pre-wrap",
+          }}>
+            {agentMessage}
+            {isActive && isStreaming && <Cursor />}
+          </div>
+        )}
+
         {/* ── Thinking section — streams thoughts one by one ── */}
         {thoughts.length > 0 && (
           <div style={{ marginBottom: 16 }}>
@@ -318,7 +536,7 @@ function AIBubble({
         )}
 
         {/* ── Phase status line while actively generating ── */}
-        {isActive && isStreaming && (
+        {isActive && isStreaming && hasContent && (
           <div style={{
             display: "flex", alignItems: "center", gap: 8,
             marginBottom: thoughts.length > 0 ? 16 : 0,
@@ -401,7 +619,7 @@ function AIBubble({
         )}
 
         {/* ── Review action buttons ── */}
-        {isReview && topology && (
+        {isReview && topology && !securityPickerOpen && (
           <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
             <button
               onClick={onEdit}
@@ -419,7 +637,7 @@ function AIBubble({
               <Ic d={IC.pencil} size={13}/> Edit Topology
             </button>
             <button
-              onClick={onApprove}
+              onClick={() => setSecurityPickerOpen(true)}
               style={{
                 border: "none", background: G,
                 borderRadius: 8, padding: "9px 20px",
@@ -433,6 +651,16 @@ function AIBubble({
               <Ic d={IC.check} size={13}/> Approve & Export
             </button>
           </div>
+        )}
+
+        {/* ── Inline security profile picker ── */}
+        {isReview && topology && securityPickerOpen && (
+          <SecurityProfilePicker
+            selectedProfile={selectedProfile}
+            onSelectProfile={setSelectedProfile}
+            onConfirm={handleSecurityConfirm}
+            onCancel={handleSecurityCancel}
+          />
         )}
 
         {/* ── Config streaming ── one block per device, appending live ── */}
@@ -509,9 +737,20 @@ function AIBubble({
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Sidebar
+//  Sidebar (300px width per §12)
 // ═══════════════════════════════════════════════════════════════════
-function Sidebar({ open, onClose, onNewChat, history, onSelectHistory, onDeleteChat, user, onLogout }) {
+function Sidebar({ open, onClose, onNewChat, history, onSelectHistory, onDeleteChat, user, onLogout, onOpenProfile }) {
+  const [searchQuery, setSearchQuery] = useState("");
+
+  // Filter history by search query
+  const filteredHistory = useMemo(() => {
+    if (!searchQuery.trim()) return history;
+    const q = searchQuery.toLowerCase();
+    return history.filter((chat) =>
+      (chat.title || "").toLowerCase().includes(q)
+    );
+  }, [history, searchQuery]);
+
   return (
     <>
       {open && (
@@ -522,10 +761,10 @@ function Sidebar({ open, onClose, onNewChat, history, onSelectHistory, onDeleteC
       )}
       <div style={{
         position: "fixed", left: 0, top: 0, bottom: 0,
-        width: 280, background: "white",
+        width: SIDEBAR_W, background: "white",
         borderRight: `1px solid ${BD}`,
         zIndex: 50, display: "flex", flexDirection: "column",
-        transform: open ? "translateX(0)" : "translateX(-280px)",
+        transform: open ? "translateX(0)" : `translateX(-${SIDEBAR_W}px)`,
         transition: "transform .22s ease-out",
         fontFamily: "'Inter', system-ui, sans-serif",
       }}>
@@ -567,14 +806,48 @@ function Sidebar({ open, onClose, onNewChat, history, onSelectHistory, onDeleteC
           </button>
         </div>
 
+        {/* Search input */}
+        <div style={{ padding: "0 12px 8px" }}>
+          <div style={{
+            display: "flex", alignItems: "center", gap: 6,
+            border: `1px solid ${BD}`, borderRadius: 8,
+            padding: "6px 10px", background: "white",
+          }}>
+            <Ic d={IC.search} size={13} color="#9CA3AF"/>
+            <input
+              type="text"
+              placeholder="Search topologies..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              style={{
+                border: "none", outline: "none", flex: 1,
+                fontSize: 12, color: "#374151", background: "transparent",
+                fontFamily: "inherit", padding: 0,
+              }}
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                style={{
+                  border: "none", background: "transparent",
+                  cursor: "pointer", color: "#9CA3AF", padding: 0,
+                  display: "flex", alignItems: "center",
+                }}
+              >
+                <Ic d={IC.x} size={11}/>
+              </button>
+            )}
+          </div>
+        </div>
+
         {/* History */}
         <div style={{ flex: 1, overflowY: "auto", padding: "4px 8px" }}>
-          {history.length === 0 && (
+          {filteredHistory.length === 0 && (
             <div style={{ fontSize: 12, color: "#9CA3AF", textAlign: "center", padding: "20px 0" }}>
-              No topologies yet
+              {searchQuery ? "No matching topologies" : "No topologies yet"}
             </div>
           )}
-          {history.map((chat) => (
+          {filteredHistory.map((chat) => (
             <div
               key={chat._id || chat.id}
               onClick={() => { onSelectHistory(chat); onClose(); }}
@@ -618,17 +891,30 @@ function Sidebar({ open, onClose, onNewChat, history, onSelectHistory, onDeleteC
             </div>
             <div style={{ fontSize: 11, color: "#9CA3AF" }}>{user?.email || ""}</div>
           </div>
-          <button onClick={onLogout} style={{
-            border: `1px solid ${BD}`, background: "white",
-            borderRadius: 7, padding: "5px 10px",
-            fontSize: 12, color: "#6B7280", cursor: "pointer",
-            display: "flex", alignItems: "center", gap: 4,
-          }}
-            onMouseOver={(e) => { e.currentTarget.style.color = "#EF4444"; e.currentTarget.style.borderColor = "#FECACA"; }}
-            onMouseOut={(e)  => { e.currentTarget.style.color = "#6B7280"; e.currentTarget.style.borderColor = BD; }}
-          >
-            <Ic d={IC.logout} size={13}/> Sign out
-          </button>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={() => { onOpenProfile(); onClose(); }} style={{
+              border: `1px solid ${BD}`, background: "white",
+              borderRadius: 7, padding: "5px 10px",
+              fontSize: 12, color: "#6B7280", cursor: "pointer",
+              display: "flex", alignItems: "center", gap: 4,
+            }}
+              onMouseOver={(e) => { e.currentTarget.style.color = G; e.currentTarget.style.borderColor = "#BBF7D0"; }}
+              onMouseOut={(e)  => { e.currentTarget.style.color = "#6B7280"; e.currentTarget.style.borderColor = BD; }}
+            >
+              <Ic d={IC.settings} size={13}/> Profile
+            </button>
+            <button onClick={onLogout} style={{
+              border: `1px solid ${BD}`, background: "white",
+              borderRadius: 7, padding: "5px 10px",
+              fontSize: 12, color: "#6B7280", cursor: "pointer",
+              display: "flex", alignItems: "center", gap: 4,
+            }}
+              onMouseOver={(e) => { e.currentTarget.style.color = "#EF4444"; e.currentTarget.style.borderColor = "#FECACA"; }}
+              onMouseOut={(e)  => { e.currentTarget.style.color = "#6B7280"; e.currentTarget.style.borderColor = BD; }}
+            >
+              <Ic d={IC.logout} size={13}/> Sign out
+            </button>
+          </div>
         </div>
       </div>
     </>
@@ -636,355 +922,23 @@ function Sidebar({ open, onClose, onNewChat, history, onSelectHistory, onDeleteC
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  TopologyViewer overlay (full-screen)
-// ═══════════════════════════════════════════════════════════════════
-function TopologyViewer({ topology, requirements, onClose, onEdit, onApprove, isReview }) {
-  const [selected, setSelected] = useState(null);
-
-  const nodes = topology?.nodes || [];
-  const links = topology?.links || [];
-
-  // Simple grid layout — fixed tiers, no physics needed for correctness
-  const NODE_TYPE_TIER = {
-    nat: 0, cloud: 0,
-    dynamips: 1, iou: 1, qemu: 1, virtualbox: 1, vmware: 1,
-    ethernet_switch: 2, ethernet_hub: 2, frame_relay_switch: 2, atm_switch: 2,
-    docker: 3,
-    vpcs: 3, traceng: 3,
-  };
-
-  const NODE_COLOR = {
-    dynamips:        { fill: "rgba(22,101,52,0.10)", stroke: "rgba(22,101,52,0.55)", text: "#166534", abbr: "R"   },
-    iou:             { fill: "rgba(22,101,52,0.10)", stroke: "rgba(22,101,52,0.55)", text: "#166534", abbr: "IOU" },
-    qemu:            { fill: "rgba(22,101,52,0.10)", stroke: "rgba(22,101,52,0.55)", text: "#166534", abbr: "VM"  },
-    ethernet_switch: { fill: "rgba(59,130,246,0.08)", stroke: "rgba(59,130,246,0.45)", text: "#1D4ED8", abbr: "SW" },
-    ethernet_hub:    { fill: "rgba(59,130,246,0.08)", stroke: "rgba(59,130,246,0.45)", text: "#1D4ED8", abbr: "HUB"},
-    vpcs:            { fill: "rgba(107,114,128,0.07)", stroke: "rgba(107,114,128,0.35)", text: "#374151", abbr: "PC"},
-    nat:             { fill: "rgba(107,114,128,0.07)", stroke: "rgba(107,114,128,0.35)", text: "#374151", abbr: "NAT"},
-    cloud:           { fill: "rgba(107,114,128,0.07)", stroke: "rgba(107,114,128,0.35)", text: "#374151", abbr: "CLD"},
-    docker:          { fill: "rgba(99,102,241,0.08)", stroke: "rgba(99,102,241,0.45)", text: "#4338CA", abbr: "DK" },
-    traceng:         { fill: "rgba(107,114,128,0.07)", stroke: "rgba(107,114,128,0.35)", text: "#374151", abbr: "TR"},
-  };
-
-  function ncfg(node) {
-    const nt = node.node_type || "";
-    const tmpl = (node.template_name || "").toLowerCase();
-    if (nt === "qemu" && (tmpl.includes("pfsense") || tmpl.includes("firewall") || tmpl.includes("asa"))) {
-      return { fill: "rgba(234,88,12,0.08)", stroke: "rgba(234,88,12,0.45)", text: "#C2410C", abbr: "FW" };
-    }
-    return NODE_COLOR[nt] || { fill: "rgba(107,114,128,0.07)", stroke: "rgba(107,114,128,0.35)", text: "#374151", abbr: "N" };
-  }
-
-  // Deterministic layout: group by tier, spread horizontally
-  const positions = useMemo(() => {
-    const groups = {};
-    nodes.forEach((n, i) => {
-      const tier = NODE_TYPE_TIER[n.node_type] ?? 2;
-      if (!groups[tier]) groups[tier] = [];
-      groups[tier].push({ ...n, _idx: i });
-    });
-    const tiers = Object.keys(groups).map(Number).sort();
-    const W = 1200, rowH = Math.min(160, 800 / Math.max(tiers.length, 1));
-    const pos = {};
-    tiers.forEach((tier, ri) => {
-      const grp = groups[tier];
-      const y = 80 + ri * rowH + rowH / 2;
-      grp.forEach((n, ci) => {
-        const x = W / 2 - (grp.length - 1) * 100 / 2 + ci * 100;
-        pos[n.node_id] = { x, y };
-      });
-    });
-    return pos;
-  }, [nodes]);
-
-  function gp(id) { return positions[id] || { x: 600, y: 400 }; }
-
-  const nodeMap = useMemo(() => Object.fromEntries(nodes.map((n) => [n.node_id, n])), [nodes]);
-  const connectedTo = useMemo(() => {
-    if (!selected) return new Set();
-    const s = new Set();
-    links.forEach(({ from_node, to_node }) => {
-      if (from_node === selected) s.add(to_node);
-      if (to_node === selected) s.add(from_node);
-    });
-    return s;
-  }, [selected, links]);
-
-  const selNode = selected ? nodeMap[selected] : null;
-  const selReq  = selNode ? requirements?.find((r) => r.node_id === selNode.node_id) : null;
-
-  return (
-    <div style={{
-      position: "fixed", inset: 0, zIndex: 100,
-      background: BG, display: "flex", flexDirection: "column",
-      fontFamily: "'Inter', system-ui, sans-serif",
-    }}>
-      {/* Header */}
-      <div style={{
-        height: 54, background: "white", borderBottom: `1px solid ${BD}`,
-        display: "flex", alignItems: "center",
-        justifyContent: "space-between", padding: "0 20px", flexShrink: 0,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 32, height: 32, borderRadius: 8, background: G,
-            display: "flex", alignItems: "center", justifyContent: "center", color: "white" }}>
-            <NetIcon size={16}/>
-          </div>
-          <span style={{ fontWeight: 700, fontSize: 15, color: "#111" }}>
-            Topology Schematic
-          </span>
-          <span style={{ fontSize: 13, color: "#6B7280" }}>
-            {nodes.length} nodes · {links.length} links
-          </span>
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          {isReview && (
-            <>
-              <button onClick={onEdit} style={{
-                border: `1px solid ${BD}`, background: "white",
-                borderRadius: 8, padding: "7px 14px",
-                fontSize: 13, fontWeight: 500, color: "#374151",
-                cursor: "pointer", display: "flex", alignItems: "center", gap: 5,
-              }}>
-                <Ic d={IC.pencil} size={13}/> Edit
-              </button>
-              <button onClick={onApprove} style={{
-                border: "none", background: G,
-                borderRadius: 8, padding: "7px 16px",
-                fontSize: 13, fontWeight: 600, color: "white",
-                cursor: "pointer", display: "flex", alignItems: "center", gap: 5,
-              }}>
-                <Ic d={IC.check} size={13}/> Continue
-              </button>
-            </>
-          )}
-          <button onClick={onClose} style={{
-            border: `1px solid ${BD}`, background: "white",
-            borderRadius: 8, padding: "7px 12px",
-            cursor: "pointer", color: "#6B7280",
-            display: "flex", alignItems: "center", gap: 4, fontSize: 13,
-          }}>
-            <Ic d={IC.x} size={13}/> Close
-          </button>
-        </div>
-      </div>
-
-      {/* Body */}
-      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-        {/* Canvas */}
-        <div style={{ flex: 1, overflow: "auto", background: "#FAFAFA" }}>
-          <svg width="100%" viewBox="0 0 1200 600" style={{ display: "block", minHeight: 600 }}>
-            <defs>
-              <pattern id="vgrid" width="40" height="40" patternUnits="userSpaceOnUse">
-                <path d="M40 0L0 0 0 40" fill="none" stroke="rgba(0,0,0,0.04)" strokeWidth="0.5"/>
-              </pattern>
-            </defs>
-            <rect width="100%" height="100%" fill="url(#vgrid)"/>
-
-            {links.map((l, i) => {
-              const a = gp(l.from_node); const b = gp(l.to_node);
-              const hi = selected && (l.from_node === selected || l.to_node === selected);
-              return (
-                <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-                  stroke={hi ? G : "rgba(0,0,0,0.12)"}
-                  strokeWidth={hi ? 2.5 : 1.5}
-                  strokeDasharray={l.link_type === "serial" ? "6 3" : undefined}
-                />
-              );
-            })}
-
-            {nodes.map((n) => {
-              const { x, y } = gp(n.node_id);
-              const cfg  = ncfg(n);
-              const isSel = selected === n.node_id;
-              const isDim = selected && !isSel && !connectedTo.has(n.node_id);
-              const W2 = 70, H2 = 38;
-
-              return (
-                <g key={n.node_id}
-                  onClick={() => setSelected(isSel ? null : n.node_id)}
-                  style={{ cursor: "pointer", opacity: isDim ? 0.25 : 1, transition: "opacity .2s" }}
-                >
-                  <rect x={x - W2/2} y={y - H2/2} width={W2} height={H2} rx={6}
-                    fill={isSel ? `${cfg.fill}` : cfg.fill}
-                    stroke={isSel ? G : cfg.stroke}
-                    strokeWidth={isSel ? 2 : 1.2}
-                  />
-                  <text x={x} y={y + 1} textAnchor="middle" dominantBaseline="middle"
-                    fontSize="14" fontWeight="700" fill={isSel ? G : cfg.text}
-                    fontFamily="monospace">
-                    {cfg.abbr}
-                  </text>
-                  <text x={x} y={y + H2/2 + 13} textAnchor="middle"
-                    fontSize="11" fill="#6B7280" fontFamily="system-ui">
-                    {n.name}
-                  </text>
-                </g>
-              );
-            })}
-
-            {/* Legend */}
-            <g transform="translate(16,16)">
-              <rect width="126" height="108" rx="6"
-                fill="rgba(255,255,255,0.92)" stroke="rgba(0,0,0,0.07)" strokeWidth="0.8"/>
-              <text x="10" y="20" fontSize="9" fill="#9CA3AF" fontWeight="700"
-                fontFamily="monospace" letterSpacing="0.1em">LEGEND</text>
-              {[
-                ["R",   "Router",  "#166534"],
-                ["SW",  "Switch",  "#1D4ED8"],
-                ["PC",  "Host",    "#374151"],
-                ["FW",  "Firewall","#C2410C"],
-                ["DK",  "Docker",  "#4338CA"],
-              ].map(([abbr, lbl, col], i) => (
-                <g key={abbr} transform={`translate(10,${30 + i * 16})`}>
-                  <rect width="24" height="12" rx="3"
-                    fill={`${col}18`} stroke={`${col}60`} strokeWidth="0.8"/>
-                  <text x="12" y="8.5" textAnchor="middle" dominantBaseline="middle"
-                    fontSize="7" fill={col} fontWeight="700" fontFamily="monospace">{abbr}</text>
-                  <text x="30" y="8" dominantBaseline="middle"
-                    fontSize="9" fill="#6B7280" fontFamily="system-ui">{lbl}</text>
-                </g>
-              ))}
-            </g>
-          </svg>
-        </div>
-
-        {/* Inspection panel */}
-        <div style={{
-          width: 260, borderLeft: `1px solid ${BD}`,
-          background: "white", overflowY: "auto", flexShrink: 0,
-          padding: selNode ? 20 : 0,
-          display: "flex", flexDirection: "column",
-        }}>
-          {selNode ? (
-            <div>
-              <div style={{
-                display: "flex", justifyContent: "space-between",
-                alignItems: "flex-start", marginBottom: 18,
-              }}>
-                <div>
-                  <div style={{ fontSize: 16, fontWeight: 700, color: "#111" }}>
-                    {selNode.name}
-                  </div>
-                  <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>
-                    {selNode.node_type}
-                  </div>
-                </div>
-                <button onClick={() => setSelected(null)} style={{
-                  border: "none", background: "transparent",
-                  cursor: "pointer", color: "#9CA3AF", padding: 4,
-                }}>
-                  <Ic d={IC.x} size={14}/>
-                </button>
-              </div>
-
-              {[
-                ["Template",   selNode.template_name || "Built-in"],
-                ["Node ID",    selNode.node_id],
-                ["Links",      String(selNode.link_count ?? 0)],
-              ].map(([label, val]) => (
-                <div key={label} style={{ marginBottom: 12 }}>
-                  <div style={{
-                    fontSize: 9, fontWeight: 700, letterSpacing: "0.1em",
-                    color: "#9CA3AF", textTransform: "uppercase",
-                    fontFamily: "monospace", marginBottom: 3,
-                  }}>{label}</div>
-                  <div style={{ fontSize: 12, color: "#374151", fontFamily: "monospace" }}>
-                    {val}
-                  </div>
-                </div>
-              ))}
-
-              {selReq && selReq.image_required && (
-                <div style={{ marginBottom: 12 }}>
-                  <div style={{
-                    fontSize: 9, fontWeight: 700, letterSpacing: "0.1em",
-                    color: "#9CA3AF", textTransform: "uppercase",
-                    fontFamily: "monospace", marginBottom: 3,
-                  }}>IMAGE FILE</div>
-                  {selReq.image_file ? (
-                    <div style={{
-                      fontSize: 11, color: G, fontFamily: "monospace",
-                      background: "#F0FDF4", padding: "4px 8px",
-                      borderRadius: 4, border: "1px solid #BBF7D0",
-                      wordBreak: "break-all",
-                    }}>
-                      {selReq.image_file}
-                    </div>
-                  ) : (
-                    <div style={{
-                      fontSize: 11, color: "#DC2626",
-                      background: "#FEF2F2", padding: "4px 8px",
-                      borderRadius: 4, border: "1px solid #FECACA",
-                    }}>
-                      Missing — configure in profile
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Connected nodes */}
-              {connectedTo.size > 0 && (
-                <div>
-                  <div style={{
-                    fontSize: 9, fontWeight: 700, letterSpacing: "0.1em",
-                    color: "#9CA3AF", textTransform: "uppercase",
-                    fontFamily: "monospace", marginBottom: 6,
-                  }}>CONNECTED TO</div>
-                  {[...connectedTo].map((id) => {
-                    const peer = nodeMap[id];
-                    return (
-                      <div
-                        key={id}
-                        onClick={() => setSelected(id)}
-                        style={{
-                          padding: "6px 10px", borderRadius: 6, cursor: "pointer",
-                          marginBottom: 4, background: MT,
-                          fontSize: 12, color: "#374151", fontFamily: "monospace",
-                        }}
-                        onMouseOver={(e) => e.currentTarget.style.background = "#E5E7EB"}
-                        onMouseOut={(e)  => e.currentTarget.style.background = MT}
-                      >
-                        {peer?.name || id}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div style={{
-              flex: 1, display: "flex", flexDirection: "column",
-              alignItems: "center", justifyContent: "center",
-              padding: 24, textAlign: "center",
-            }}>
-              <div style={{
-                width: 40, height: 40, borderRadius: 10,
-                background: MT, display: "flex", alignItems: "center",
-                justifyContent: "center", color: "#9CA3AF", marginBottom: 10,
-              }}>
-                <NetIcon size={20}/>
-              </div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "#6B7280" }}>
-                Select a node
-              </div>
-              <div style={{ fontSize: 12, color: "#9CA3AF", marginTop: 4, lineHeight: 1.5 }}>
-                Click any node to inspect its properties and connections
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════
 //  Input bar
 // ═══════════════════════════════════════════════════════════════════
-function ChatInputBar({ onSend, disabled, placeholder }) {
+function ChatInputBar({ onSend, disabled, placeholder, inputRef, externalFocus }) {
   const [value, setValue] = useState("");
   const taRef = useRef(null);
+
+  // Expose the internal textarea ref to parent via inputRef
+  useEffect(() => {
+    if (inputRef) inputRef.current = taRef.current;
+  }, [inputRef]);
+
+  // When externalFocus is triggered, focus and optionally set placeholder
+  useEffect(() => {
+    if (externalFocus && taRef.current) {
+      taRef.current.focus();
+    }
+  }, [externalFocus]);
 
   const submit = () => {
     const t = value.trim();
@@ -1053,10 +1007,11 @@ function ChatInputBar({ onSend, disabled, placeholder }) {
 // ═══════════════════════════════════════════════════════════════════
 const SUGGESTIONS = [
   "Campus network with 3 VLANs, core router, and internet access",
+  "How do I configure OSPF on a Cisco router?",
+  "Apply enterprise security to my topology",
   "Branch office with WAN link to HQ and local workstations",
+  "Add a DMZ zone with firewall between my core and edge routers",
   "Simple lab: 2 routers, 2 switches, and 4 PCs",
-  "Data center spine-leaf with management VLAN",
-  "Home network with firewall, switch, and wireless segment",
 ];
 
 function EmptyState({ onSend }) {
@@ -1078,13 +1033,13 @@ function EmptyState({ onSend }) {
         <div style={{ fontSize: 20, fontWeight: 700, color: "#111", marginBottom: 6 }}>
           What network would you like to build?
         </div>
-        <div style={{ fontSize: 14, color: "#6B7280", maxWidth: 440, lineHeight: 1.6 }}>
-          Describe any network topology in plain English. I'll design it, configure every device, and export a ready-to-import GNS3 project.
+        <div style={{ fontSize: 14, color: "#6B7280", maxWidth: 460, lineHeight: 1.6 }}>
+          Describe any topology in plain English, ask about configurations, or request security hardening. I'll design, configure, and export a ready-to-import GNS3 project.
         </div>
       </div>
       <div style={{
         display: "flex", flexWrap: "wrap",
-        gap: 8, justifyContent: "center", maxWidth: 520, marginTop: 4,
+        gap: 8, justifyContent: "center", maxWidth: 560, marginTop: 4,
       }}>
         {SUGGESTIONS.map((s, i) => (
           <button key={i} onClick={() => onSend(s)} style={{
@@ -1113,17 +1068,22 @@ export default function ChatPage() {
   const {
     thoughts, topology, requirements, summary,
     configTexts, phase, subPhase, status, exportData,
+    agentMessage, toolCallsMade,
     startStream, stopStream, reset,
   } = useSSE();
 
   // ── Page state ────────────────────────────────────────────────
   const [sidebarOpen,  setSidebarOpen]  = useState(false);
   const [topologyOpen, setTopologyOpen] = useState(false);
-  const [editMode,     setEditMode]     = useState(false);
-  const [editText,     setEditText]     = useState("");
   const [history,      setHistory]      = useState([]);
   const [sessionId,    setSessionId]    = useState(null);
   const [chatId,       setChatId]       = useState(null);
+  const [profileOpen,  setProfileOpen]  = useState(false);
+
+  // ── Edit mode: just a focus trigger for the chat input ────────
+  const [editFocusCounter, setEditFocusCounter] = useState(0);
+  const [inputPlaceholder, setInputPlaceholder] = useState("");
+  const inputRef = useRef(null);
 
   // ── messages: array of { role, text, bubbleData? } ───────────
   // role = "user" | "ai" | "error"
@@ -1144,9 +1104,22 @@ export default function ChatPage() {
   // ── Load history + profile on mount ──────────────────────────
   useEffect(() => {
     getChats().then(setHistory).catch(() => {});
-    import("../lib/api").then(({ getUserProfile }) =>
-      getUserProfile().then((d) => { profile.current = d?.profile || {}; }).catch(() => {})
-    );
+    getUserProfile().then((d) => {
+      const p = d?.profile || {};
+      profile.current = p;
+      // ── First-visit profile popup ──
+      // If profile has no version AND no images, show the profile modal
+      const hasVersion = p.version && p.version.trim() !== "";
+      const hasImages = (Array.isArray(p.images) && p.images.length > 0)
+        || (typeof p.images === "object" && p.images !== null && Object.keys(p.images).length > 0);
+      if (!hasVersion && !hasImages) {
+        setProfileOpen(true);
+      }
+    }).catch(() => {
+      // Profile not loaded — also trigger profile popup for first visit
+      profile.current = {};
+      setProfileOpen(true);
+    });
   }, []);
 
   // ── Auto-scroll ───────────────────────────────────────────────
@@ -1154,13 +1127,17 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length, thoughts.length, Object.keys(configTexts).length]);
 
-  // ── Send a user prompt ────────────────────────────────────────
+  // ── Send a user prompt (LLM Tool Calling) ────────────────────────
+  // FIX: Only create a chat entry in the database ONCE per conversation (first message only).
+  // Previously, every message created a new chat entry.
   const handleSend = useCallback(async (text) => {
     // 1. Push user bubble
     setMessages((prev) => [...prev, { role: "user", text }]);
-    // 2. Push empty AI bubble (will fill via SSE)
+    // 2. Push empty AI bubble (will fill via SSE + agentChat response)
     setMessages((prev) => [...prev, { role: "ai", id: Date.now() }]);
-    setEditMode(false);
+
+    // Clear edit placeholder
+    setInputPlaceholder("");
 
     try {
       // Create session if needed
@@ -1171,51 +1148,67 @@ export default function ChatPage() {
         setSessionId(sid);
       }
 
-      // Start generation
-      await startGeneration(sid, text, null, profile.current?.security_profile || "none");
+      // Start SSE listener first (so we catch early events)
       startStream(sid);
 
-      // Save to chat history
-      try {
-        const chat = await createChat({ text });
-        const cid = chat._id || chat.id;
-        setChatId(cid);
-        setHistory((h) => [chat, ...h.filter((c) => (c._id || c.id) !== cid)]);
-        if (sid) await updateChatSessionId(cid, sid);
-      } catch { /* non-critical */ }
+      // Send message to the Tool Calling agent
+      // The LLM decides which tools to call; SSE events stream topology/config/etc.
+      const response = await agentChat(sid, text);
+
+      // The API also returns { message, tool_calls_made } as a fallback
+      // SSE agent_message event is the primary source, but we update from
+      // the HTTP response too (in case SSE missed it)
+      if (response?.message && !agentMessage) {
+        // agentMessage will be set by SSE; this is a fallback
+      }
+
+      // Save to chat history ONLY on the first message of a conversation
+      if (!chatId) {
+        try {
+          const chat = await createChat({ text });
+          const cid = chat._id || chat.id;
+          setChatId(cid);
+          setHistory((h) => [chat, ...h.filter((c) => (c._id || c.id) !== cid)]);
+          if (sid) await updateChatSessionId(cid, sid);
+        } catch { /* non-critical */ }
+      }
+      // Subsequent messages do NOT create new chat entries — they just
+      // continue the existing conversation via agentChat(sid, text)
     } catch (err) {
       setMessages((prev) => [...prev, { role: "error", text: err.message }]);
     }
-  }, [sessionId, startStream]);
+  }, [sessionId, chatId, agentMessage, startStream]);
 
-  // ── Edit topology ─────────────────────────────────────────────
-  const handleEdit = useCallback(async () => {
-    if (!editText.trim() || !sessionId) return;
-    const feedback = editText.trim();
-    setEditText("");
-    setEditMode(false);
-    setMessages((prev) => [...prev, { role: "user", text: feedback }]);
+  // ── Edit topology — focuses chat input with a hint placeholder ──
+  const handleEditFocus = useCallback(() => {
+    setInputPlaceholder("Describe your changes...");
+    setEditFocusCounter((c) => c + 1);
+    // Also focus the input directly if ref is available
+    if (inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, []);
+
+  // ── Approve topology — accepts a security profile from the inline selector ──
+  const handleApprove = useCallback(async (securityProfile) => {
+    if (!sessionId) return;
+    const secProfile = securityProfile || profile.current?.security_profile || "none";
+    const secLabel = secProfile === "enterprise" ? "enterprise-grade"
+      : secProfile === "basic" ? "basic"
+      : "no (pure lab)";
+    const msg = `I approve this topology. Please export it with ${secLabel} security hardening.`;
+    // Push user message to chat
+    setMessages((prev) => [...prev, { role: "user", text: msg }]);
     setMessages((prev) => [...prev, { role: "ai", id: Date.now() }]);
     reset();
 
     try {
-      await editTopology(sessionId, feedback);
       startStream(sessionId);
+      await agentChat(sessionId, msg);
     } catch (err) {
       setMessages((prev) => [...prev, { role: "error", text: err.message }]);
     }
-  }, [editText, sessionId, reset, startStream]);
-
-  // ── Approve topology ──────────────────────────────────────────
-  const handleApprove = useCallback(async () => {
-    if (!sessionId) return;
-    try {
-      await approveTopology(sessionId);
-      // Status will transition to "exporting" via SSE phase_change
-    } catch (err) {
-      setMessages((prev) => [...prev, { role: "error", text: err.message }]);
-    }
-  }, [sessionId]);
+  }, [sessionId, reset, startStream]);
 
   // ── Load a past chat from history ────────────────────────────
   const handleSelectHistory = useCallback(async (chat) => {
@@ -1223,7 +1216,7 @@ export default function ChatPage() {
     setSessionId(null);
     setChatId(null);
     setMessages([]);
-    setEditMode(false);
+    setInputPlaceholder("");
 
     try {
       const full = await getChat(chat._id || chat.id);
@@ -1260,8 +1253,13 @@ export default function ChatPage() {
     setSessionId(null);
     setChatId(null);
     setMessages([]);
-    setEditMode(false);
+    setInputPlaceholder("");
   }, [stopStream, reset]);
+
+  // ── Profile saved — update local ref ──────────────────────────
+  const handleProfileSaved = useCallback((savedProfile) => {
+    profile.current = savedProfile;
+  }, []);
 
   // ── Delete chat from sidebar ──────────────────────────────────
   const handleDeleteChat = useCallback(async (id) => {
@@ -1281,6 +1279,14 @@ export default function ChatPage() {
     }
     return -1;
   }, [messages]);
+
+  // ── Dynamic placeholder for the input bar ────────────────────
+  const chatPlaceholder = inputPlaceholder
+    || (isStreaming
+      ? "Generating topology..."
+      : isReview
+      ? "Ask for changes or click Approve to export..."
+      : "Describe a network topology...");
 
   return (
     <div style={{
@@ -1410,9 +1416,11 @@ export default function ChatPage() {
                     subPhase={isLive ? subPhase : null}
                     status={isLive ? status : "complete"}
                     exportData={isLive ? exportData : null}
+                    agentMessage={isLive ? agentMessage : ""}
+                    toolCallsMade={isLive ? toolCallsMade : []}
                     isActive={isLive && isActive}
                     onOpenTopology={() => setTopologyOpen(true)}
-                    onEdit={() => { setEditMode(true); setEditText(""); }}
+                    onEdit={handleEditFocus}
                     onApprove={handleApprove}
                     sessionId={sessionId}
                     projectName={projectName}
@@ -1422,69 +1430,6 @@ export default function ChatPage() {
 
               return null;
             })}
-
-            {/* ── Edit input that appears inline after the AI bubble ── */}
-            {editMode && (
-              <div style={{ marginBottom: 20 }}>
-                {/* Looks like a user bubble being typed */}
-                <div style={{
-                  border: `1.5px solid ${G}`,
-                  borderRadius: 12, background: "white",
-                  overflow: "hidden",
-                }}>
-                  <div style={{
-                    padding: "9px 14px", borderBottom: `1px solid ${BD}`,
-                    fontSize: 11, fontWeight: 600, color: G,
-                    letterSpacing: "0.05em", textTransform: "uppercase",
-                    background: "#F0FDF4", display: "flex", alignItems: "center", gap: 6,
-                  }}>
-                    <Ic d={IC.pencil} size={11}/> Edit request
-                  </div>
-                  <textarea
-                    autoFocus
-                    value={editText}
-                    onChange={(e) => setEditText(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleEdit(); }
-                      if (e.key === "Escape") setEditMode(false);
-                    }}
-                    placeholder="Describe what you'd like to change..."
-                    style={{
-                      width: "100%", border: "none", outline: "none",
-                      padding: "12px 14px", resize: "none",
-                      fontSize: 14, fontFamily: "inherit",
-                      color: "#111", lineHeight: 1.5, minHeight: 72,
-                      boxSizing: "border-box",
-                    }}
-                  />
-                  <div style={{
-                    padding: "8px 12px", borderTop: `1px solid ${BD}`,
-                    display: "flex", gap: 8, justifyContent: "flex-end",
-                  }}>
-                    <button onClick={() => setEditMode(false)} style={{
-                      border: `1px solid ${BD}`, background: "white",
-                      borderRadius: 7, padding: "6px 14px",
-                      fontSize: 12, color: "#6B7280", cursor: "pointer",
-                    }}>
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleEdit}
-                      disabled={!editText.trim()}
-                      style={{
-                        border: "none",
-                        background: editText.trim() ? G : BD,
-                        borderRadius: 7, padding: "6px 14px",
-                        fontSize: 12, fontWeight: 600, color: "white",
-                        cursor: editText.trim() ? "pointer" : "not-allowed",
-                      }}
-                    >
-                      Send
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
 
             <div ref={bottomRef}/>
           </div>
@@ -1500,13 +1445,9 @@ export default function ChatPage() {
           <ChatInputBar
             onSend={handleSend}
             disabled={isStreaming}
-            placeholder={
-              isStreaming
-                ? "Generating topology..."
-                : isReview
-                ? "Ask for changes or click Approve to export..."
-                : "Describe a network topology..."
-            }
+            placeholder={chatPlaceholder}
+            inputRef={inputRef}
+            externalFocus={editFocusCounter}
           />
           <div style={{
             marginTop: 8, fontSize: 11, color: "#9CA3AF",
@@ -1517,22 +1458,13 @@ export default function ChatPage() {
         </div>
       </div>
 
-      {/* ── TopologyViewer overlay ── */}
+      {/* ── TopologyViewer overlay (standalone component) ── */}
+      {/* Only pass topology, requirements, onClose — NOT onEdit/onApprove/isReview */}
       {topologyOpen && topology && (
         <TopologyViewer
           topology={topology}
           requirements={requirements}
           onClose={() => setTopologyOpen(false)}
-          onEdit={() => {
-            setTopologyOpen(false);
-            setEditMode(true);
-            setEditText("");
-          }}
-          onApprove={() => {
-            setTopologyOpen(false);
-            handleApprove();
-          }}
-          isReview={isReview}
         />
       )}
 
@@ -1546,7 +1478,16 @@ export default function ChatPage() {
         onDeleteChat={handleDeleteChat}
         user={user}
         onLogout={logout}
+        onOpenProfile={() => setProfileOpen(true)}
       />
+
+      {/* ── Profile Modal ── */}
+      {profileOpen && (
+        <ProfileModal
+          onClose={() => setProfileOpen(false)}
+          onSaved={(saved) => { handleProfileSaved(saved); setProfileOpen(false); }}
+        />
+      )}
     </div>
   );
 }

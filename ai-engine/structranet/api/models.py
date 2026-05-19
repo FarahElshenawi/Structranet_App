@@ -165,3 +165,19 @@ class ExportResponse(BaseModel):
     node_count: int = 0
     link_count: int = 0
     configured_count: int = 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Agent Chat (Conversational Agent — LLM Tool Calling)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AgentChatRequest(BaseModel):
+    """Request body for the /agent/chat endpoint."""
+    session_id: str
+    message: str
+
+
+class AgentChatResponse(BaseModel):
+    """Response body for the /agent/chat endpoint."""
+    message: str                        # The LLM's natural-language reply
+    tool_calls_made: List[str] = []     # Which backend tools were invoked

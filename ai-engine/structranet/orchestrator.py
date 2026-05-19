@@ -48,6 +48,8 @@ from datetime import datetime, timezone
 import json
 import logging
 import os
+import sys
+import time
 from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional
@@ -83,13 +85,19 @@ OUTPUT_DIR = os.getenv("STRUCTRANET_OUTPUT_DIR", "output")
 _SEP = "=" * 70
 _SEP_THIN = "-" * 70
 
+def stream_print(text, speed=0.015):
+    for char in text:
+        sys.stdout.write(char)
+        sys.stdout.flush()
+        time.sleep(speed)
+    print()
 
 def _print_box(title: str, body: str) -> None:
     print(f"\n{_SEP}")
     print(f"  {title}")
     print(_SEP_THIN)
     for line in body.splitlines():
-        print(f"  {line}")
+        stream_print(f"  {line}", speed=0.01)
     print(_SEP)
 
 
@@ -473,10 +481,10 @@ def main():
     )
     print("\n[Design Review]")
     for t in thoughts:
-        print(f"  - {t}")
+        stream_print(f"  - {t}", speed=0.015)
     print("  Assumptions / risks:")
     for a in assumptions:
-        print(f"    * {a}")
+        stream_print(f"    * {a}", speed=0.015)
 
     # ── [5/6] Phase 2 — Software configuration ───────────────────────────────
     final_file = args.output or os.path.join(OUTPUT_DIR, "final_topology.json")

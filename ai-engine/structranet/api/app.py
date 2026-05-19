@@ -29,6 +29,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 
 from structranet.api.models import (
+    AgentChatRequest,
+    AgentChatResponse,
     CreateSessionRequest,
     EditRequest,
     GenerateRequest,
@@ -46,6 +48,7 @@ from structranet.generation.preflight import (
     profile_to_dict,
 )
 from structranet.core.session import SessionStore
+from structranet.ai.chat_orchestrator import dispatch as agent_dispatch
 
 load_dotenv()
 logger = logging.getLogger("structranet.api")
@@ -442,4 +445,37 @@ async def download_requirements_json(session_id: str):
         headers={
             "Content-Disposition": f'attachment; filename="{project_name}_requirements.json"',
         },
+    )
+
+
+# ==============================================================================
+#  Conversational Agent Chat (LLM Tool Calling)
+# ==============================================================================
+
+@app.post("/agent/chat")
+async def agent_chat(body: AgentChatRequest):
+    """Conversational agent endpoint — LLM Tool Calling architecture.
+
+    The LLM is the orchestrator. It decides which tools to call based on
+    the conversation context. No rigid FSM. No intent router.
+
+    The frontend should:
+    - POST here for every user message
+    - Listen to /sessions/{id}/events for real-time SSE updates (topology, configs)
+    """
+    session = await _get_session(body.session_id)
+
+    try:
+        response = await agent_dispatch(
+            user_message=body.message,
+            session=session,
+            store=store,
+        )
+    except Exception as exc:
+        logger.error("Agent dispatch error: %s", exc, exc_info=True)
+        raise HTTPException(500, f"Agent error: {exc}")
+
+    return AgentChatResponse(
+        message=response.message,
+        tool_calls_made=response.tool_calls_made,
     )

@@ -1,0 +1,596 @@
+Cisco IOS — General Commands Complete Reference — All Layers (L1 to L7)
+ GNS3 / Cisco IOS — 2026
+ 
+Layer 1 | Physical Layer — Device & Interface Management
+■ Basic Device Setup
+Router> enable
+Router# configure terminal
+Router(config)# hostname R1
+Router(config)# no ip domain-lookup
+Router(config)# service password-encryption
+Router(config)# banner motd # Authorized Access Only #
+Router(config)# clock timezone EET 2
+Router# clock set 12:00:00 1 Jan 2026
+Router# show version
+Router# show inventory
+Router# show clock
+Router# show processes cpu
+Router# show processes memory
+■ Interface Configuration
+Router(config)# interface GigabitEthernet0/0
+Router(config-if)# ip address 192.168.1.1 255.255.255.0
+Router(config-if)# no shutdown
+Router(config-if)# description WAN-Link
+Router(config-if)# duplex full
+Router(config-if)# speed 1000
+Router(config-if)# mtu 1500
+Router(config-if)# bandwidth 1000000
+Router(config-if)# shutdown
+Router(config-if)# exit
+Router# show interfaces
+Router# show interfaces GigabitEthernet0/0
+Router# show ip interface brief
+Router# show interfaces status
+Router# show interfaces counters
+■ Serial Interface
+Router(config)# interface Serial0/0/0
+Router(config-if)# ip address 10.0.0.1 255.255.255.252
+Router(config-if)# clock rate 64000
+Router(config-if)# encapsulation hdlc
+Router(config-if)# encapsulation ppp
+Router(config-if)# no shutdown
+Router# show controllers serial 0/0/0
+■ Loopback Interface
+Router(config)# interface Loopback0
+Router(config-if)# ip address 1.1.1.1 255.255.255.255
+Router(config-if)# no shutdown
+
+
+--- Page Break ---
+
+■ Switch Port Management
+Switch(config)# interface FastEthernet0/1
+Switch(config-if)# no shutdown
+Switch(config-if)# shutdown
+Switch(config-if)# description Server-Port
+Switch(config-if)# duplex auto
+Switch(config-if)# speed auto
+Switch(config)# interface range Fa0/1 - 24
+Switch(config-if-range)# no shutdown
+Switch# show interfaces Fa0/1
+Switch# show interfaces fa0/1 counters
+Switch# show interfaces fa0/1 trunk
+■ CDP & LLDP
+Router(config)# cdp run
+Router(config)# no cdp run
+Router(config-if)# cdp enable
+Router(config-if)# no cdp enable
+Router# show cdp
+Router# show cdp neighbors
+Router# show cdp neighbors detail
+Router# show cdp interface
+Router(config)# lldp run
+Router(config-if)# lldp transmit
+Router(config-if)# lldp receive
+Router# show lldp neighbors
+Router# show lldp neighbors detail
+■ Save & Reload
+Router# write memory
+Router# copy running-config startup-config
+Router# copy startup-config running-config
+Router# show running-config
+Router# show startup-config
+Router# erase startup-config
+Router# reload
+Router# copy running-config tftp
+Router# copy tftp running-config
+Layer 2 | Data Link Layer — Switching & VLANs
+■ VLAN Management
+Switch(config)# vlan 10
+Switch(config-vlan)# name SALES
+Switch(config-vlan)# exit
+Switch(config)# no vlan 10
+Switch# show vlan
+Switch# show vlan brief
+Switch# show vlan id 10
+Switch# show vlan name SALES
+■ Access & Trunk Ports
+Switch(config-if)# switchport mode access
+Switch(config-if)# switchport access vlan 10
+Switch(config-if)# switchport mode trunk
+Switch(config-if)# switchport trunk encapsulation dot1q
+
+
+--- Page Break ---
+
+Switch(config-if)# switchport trunk allowed vlan 10,20,30
+Switch(config-if)# switchport trunk allowed vlan add 40
+Switch(config-if)# switchport trunk allowed vlan remove 40
+Switch(config-if)# switchport trunk native vlan 999
+Switch(config-if)# switchport nonegotiate
+Switch# show interfaces trunk
+Switch# show interfaces Fa0/1 switchport
+■ VTP — VLAN Trunking Protocol
+Switch(config)# vtp mode server
+Switch(config)# vtp mode client
+Switch(config)# vtp mode transparent
+Switch(config)# vtp mode off
+Switch(config)# vtp domain LAB
+Switch(config)# vtp password Cisco123
+Switch(config)# vtp version 3
+Switch# show vtp status
+Switch# show vtp counters
+■ Spanning Tree Protocol (STP)
+Switch(config)# spanning-tree mode pvst
+Switch(config)# spanning-tree mode rapid-pvst
+Switch(config)# spanning-tree mode mst
+Switch(config)# spanning-tree vlan 10 priority 4096
+Switch(config)# spanning-tree vlan 10 root primary
+Switch(config)# spanning-tree vlan 10 root secondary
+Switch(config-if)# spanning-tree portfast
+Switch(config-if)# spanning-tree bpduguard enable
+Switch(config-if)# spanning-tree bpdufilter enable
+Switch(config-if)# spanning-tree guard root
+Switch(config-if)# spanning-tree cost 100
+Switch(config-if)# spanning-tree port-priority 64
+Switch# show spanning-tree
+Switch# show spanning-tree vlan 10
+Switch# show spanning-tree summary
+Switch# show spanning-tree detail
+■ EtherChannel / Port-Channel
+Switch(config)# interface range Fa0/1 - 2
+Switch(config-if-range)# channel-group 1 mode active
+Switch(config-if-range)# channel-group 1 mode passive
+Switch(config-if-range)# channel-group 1 mode on
+Switch(config-if-range)# channel-group 1 mode desirable
+Switch(config-if-range)# channel-group 1 mode auto
+Switch(config)# interface port-channel 1
+Switch(config-if)# switchport mode trunk
+Switch# show etherchannel summary
+Switch# show etherchannel detail
+Switch# show etherchannel port-channel
+Switch# show interfaces port-channel 1
+■ MAC Address Table
+Switch# show mac address-table
+Switch# show mac address-table dynamic
+Switch# show mac address-table static
+Switch# show mac address-table vlan 10
+Switch# show mac address-table count
+
+
+--- Page Break ---
+
+Switch(config)# mac address-table aging-time 300
+Switch# clear mac address-table dynamic
+■ Inter-VLAN Routing (Router-on-a-Stick)
+Router(config)# interface GigabitEthernet0/0
+Router(config-if)# no shutdown
+Router(config)# interface GigabitEthernet0/0.10
+Router(config-subif)# encapsulation dot1q 10
+Router(config-subif)# ip address 192.168.10.1 255.255.255.0
+Router(config)# interface GigabitEthernet0/0.20
+Router(config-subif)# encapsulation dot1q 20
+Router(config-subif)# ip address 192.168.20.1 255.255.255.0
+■ Layer 3 Switch SVI
+Switch(config)# ip routing
+Switch(config)# interface vlan 10
+Switch(config-if)# ip address 192.168.10.1 255.255.255.0
+Switch(config-if)# no shutdown
+Switch(config)# ip default-gateway 192.168.1.1
+Switch# show ip route
+Switch# show interfaces vlan 10
+Layer 3 | Network Layer — IP Routing & Addressing
+■ Static Routing
+Router(config)# ip route 192.168.2.0 255.255.255.0 10.0.0.2
+Router(config)# ip route 0.0.0.0 0.0.0.0 10.0.0.1
+Router(config)# ip route 192.168.3.0 255.255.255.0 GigabitEthernet0/1
+Router(config)# ip route 192.168.4.0 255.255.255.0 10.0.0.2 5
+Router(config)# no ip route 192.168.2.0 255.255.255.0 10.0.0.2
+Router# show ip route
+Router# show ip route static
+Router# show ip route summary
+■ RIP
+Router(config)# router rip
+Router(config-router)# version 2
+Router(config-router)# network 192.168.1.0
+Router(config-router)# network 10.0.0.0
+Router(config-router)# no auto-summary
+Router(config-router)# passive-interface GigabitEthernet0/1
+Router(config-router)# default-information originate
+Router(config-router)# maximum-paths 4
+Router# show ip rip database
+Router# show ip protocols
+Router# debug ip rip
+■ OSPF
+Router(config)# router ospf 1
+Router(config-router)# router-id 1.1.1.1
+Router(config-router)# network 192.168.1.0 0.0.0.255 area 0
+Router(config-router)# network 10.0.0.0 0.0.0.3 area 0
+Router(config-router)# passive-interface GigabitEthernet0/1
+Router(config-router)# default-information originate
+Router(config-router)# auto-cost reference-bandwidth 1000
+Router(config-router)# area 1 stub
+
+
+--- Page Break ---
+
+Router(config-router)# area 1 totally-stub
+Router(config-router)# area 1 nssa
+Router(config-router)# summary-address 10.0.0.0 255.255.0.0
+Router(config-if)# ip ospf priority 100
+Router(config-if)# ip ospf cost 10
+Router(config-if)# ip ospf hello-interval 10
+Router(config-if)# ip ospf dead-interval 40
+Router# show ip ospf
+Router# show ip ospf neighbor
+Router# show ip ospf neighbor detail
+Router# show ip ospf database
+Router# show ip ospf interface
+Router# show ip ospf interface brief
+Router# debug ip ospf events
+Router# debug ip ospf adj
+■ EIGRP
+Router(config)# router eigrp 100
+Router(config-router)# network 192.168.1.0 0.0.0.255
+Router(config-router)# no auto-summary
+Router(config-router)# passive-interface GigabitEthernet0/1
+Router(config-router)# eigrp router-id 1.1.1.1
+Router(config-router)# variance 2
+Router(config-router)# maximum-paths 4
+Router(config-if)# ip hello-interval eigrp 100 5
+Router(config-if)# ip hold-time eigrp 100 15
+Router(config-if)# bandwidth 100000
+Router# show ip eigrp neighbors
+Router# show ip eigrp topology
+Router# show ip eigrp interfaces
+Router# show ip eigrp traffic
+Router# debug ip eigrp
+■ BGP
+Router(config)# router bgp 65001
+Router(config-router)# bgp router-id 1.1.1.1
+Router(config-router)# neighbor 203.0.113.2 remote-as 65002
+Router(config-router)# neighbor 203.0.113.2 description ISP
+Router(config-router)# neighbor 203.0.113.2 ebgp-multihop 2
+Router(config-router)# neighbor 203.0.113.2 update-source Loopback0
+Router(config-router)# network 192.168.1.0 mask 255.255.255.0
+Router(config-router)# redistribute connected
+Router(config-router)# redistribute static
+Router# show bgp summary
+Router# show bgp neighbors
+Router# show bgp ipv4 unicast
+Router# show ip bgp
+Router# debug ip bgp
+■ NAT / PAT
+Router(config)# ip nat inside source static 192.168.1.10 203.0.113.10
+Router(config)# ip access-list standard NAT-POOL
+Router(config-std-nacl)# permit 192.168.0.0 0.0.255.255
+Router(config)# ip nat pool OUTSIDE 203.0.113.1 203.0.113.10 netmask 255.255.255.0
+Router(config)# ip nat inside source list NAT-POOL pool OUTSIDE overload
+Router(config)# ip nat inside source list NAT-POOL interface GigabitEthernet0/0 overload
+Router(config-if)# ip nat inside
+
+
+--- Page Break ---
+
+Router(config-if)# ip nat outside
+Router# show ip nat translations
+Router# show ip nat statistics
+Router# clear ip nat translation *
+Router# debug ip nat
+■ DHCP Server
+Router(config)# ip dhcp pool LAN
+Router(dhcp-config)# network 192.168.1.0 255.255.255.0
+Router(dhcp-config)# default-router 192.168.1.1
+Router(dhcp-config)# dns-server 8.8.8.8 1.1.1.1
+Router(dhcp-config)# domain-name lab.local
+Router(dhcp-config)# lease 7
+Router(dhcp-config)# exit
+Router(config)# ip dhcp excluded-address 192.168.1.1 192.168.1.10
+Router(config-if)# ip helper-address 192.168.10.20
+Router# show ip dhcp pool
+Router# show ip dhcp binding
+Router# show ip dhcp conflict
+Router# show ip dhcp server statistics
+Router# clear ip dhcp binding *
+■ IPv6
+Router(config)# ipv6 unicast-routing
+Router(config-if)# ipv6 address 2001:db8:1::1/64
+Router(config-if)# ipv6 address fe80::1 link-local
+Router(config-if)# ipv6 enable
+Router(config)# ipv6 route ::/0 2001:db8::1
+Router(config)# ipv6 router ospf 1
+Router(config-rtr)# router-id 1.1.1.1
+Router(config-if)# ipv6 ospf 1 area 0
+Router# show ipv6 interface brief
+Router# show ipv6 route
+Router# show ipv6 neighbors
+Router# show ipv6 ospf neighbor
+Layer 4 | Transport Layer — QoS & Traffic Management
+■ QoS — Classification & Marking
+Router(config)# class-map match-all VOIP
+Router(config-cmap)# match protocol rtp
+Router(config-cmap)# match ip dscp ef
+Router(config-cmap)# exit
+Router(config)# class-map match-any WEB
+Router(config-cmap)# match protocol http
+Router(config-cmap)# match protocol https
+Router(config-cmap)# exit
+Router(config)# policy-map MARK-TRAFFIC
+Router(config-pmap)# class VOIP
+Router(config-pmap-c)# set dscp ef
+Router(config-pmap-c)# set ip precedence 5
+Router(config-pmap)# class WEB
+Router(config-pmap-c)# set dscp af31
+Router(config-if)# service-policy input MARK-TRAFFIC
+Router# show policy-map interface
+Router# show class-map
+
+
+--- Page Break ---
+
+■ QoS — Queuing & Shaping
+Router(config)# policy-map SHAPE-OUT
+Router(config-pmap)# class VOIP
+Router(config-pmap-c)# priority 512
+Router(config-pmap)# class WEB
+Router(config-pmap-c)# bandwidth 256
+Router(config-pmap)# class class-default
+Router(config-pmap-c)# fair-queue
+Router(config-pmap-c)# shape average 2000000
+Router(config-if)# service-policy output SHAPE-OUT
+Router# show policy-map interface Gi0/0 output
+■ Access Control Lists (ACL)
+Router(config)# access-list 10 permit 192.168.1.0 0.0.0.255
+Router(config)# access-list 10 deny any
+Router(config)# access-list 100 permit tcp any any eq 80
+Router(config)# access-list 100 permit tcp any any eq 443
+Router(config)# access-list 100 deny ip any any log
+Router(config)# ip access-list standard MGMT
+Router(config-std-nacl)# permit 192.168.10.0 0.0.0.255
+Router(config-std-nacl)# deny any log
+Router(config)# ip access-list extended FILTER
+Router(config-ext-nacl)# permit tcp 192.168.1.0 0.0.0.255 any eq 80
+Router(config-ext-nacl)# permit tcp 192.168.1.0 0.0.0.255 any eq 443
+Router(config-ext-nacl)# deny ip any any log
+Router(config-if)# ip access-group FILTER in
+Router(config-if)# ip access-group FILTER out
+Router# show ip access-lists
+Router# show access-lists
+■ Policy-Based Routing (PBR)
+Router(config)# route-map PBR-MAP permit 10
+Router(config-route-map)# match ip address 100
+Router(config-route-map)# set ip next-hop 10.0.0.2
+Router(config-if)# ip policy route-map PBR-MAP
+Router# show route-map
+Router# show ip policy
+Router# debug ip policy
+■ IP SLA
+Router(config)# ip sla 1
+Router(config-ip-sla)# icmp-echo 8.8.8.8 source-interface GigabitEthernet0/0
+Router(config-ip-sla-echo)# frequency 5
+Router(config-ip-sla-echo)# exit
+Router(config)# ip sla schedule 1 life forever start-time now
+Router# show ip sla summary
+Router# show ip sla statistics
+Router# show ip sla configuration
+■ Netflow
+Router(config-if)# ip flow ingress
+Router(config-if)# ip flow egress
+Router(config)# ip flow-export destination 192.168.10.100 9996
+Router(config)# ip flow-export version 9
+Router(config)# ip flow-export source GigabitEthernet0/3
+Router(config)# ip flow-cache timeout active 1
+Router# show ip flow export
+
+
+--- Page Break ---
+
+Router# show ip cache flow
+Router# show ip cache verbose flow
+Layer 5 | Session Layer — Remote Access & Management
+■ SSH Configuration
+Router(config)# hostname R1
+Router(config)# ip domain-name lab.local
+Router(config)# crypto key generate rsa modulus 2048
+Router(config)# crypto key generate rsa general-keys modulus 4096
+Router(config)# ip ssh version 2
+Router(config)# ip ssh time-out 60
+Router(config)# ip ssh authentication-retries 3
+Router(config)# ip ssh source-interface GigabitEthernet0/3
+Router# show ip ssh
+Router# show ssh
+Router# show crypto key mypubkey rsa
+■ VTY & Console Lines
+Router(config)# line vty 0 4
+Router(config-line)# transport input ssh
+Router(config-line)# transport input telnet ssh
+Router(config-line)# transport input none
+Router(config-line)# exec-timeout 15 0
+Router(config-line)# session-timeout 480
+Router(config-line)# login local
+Router(config-line)# login
+Router(config-line)# password CiscoPass123
+Router(config-line)# logging synchronous
+Router(config-line)# history size 50
+Router(config-line)# exit
+Router(config)# line console 0
+Router(config-line)# exec-timeout 5 0
+Router(config-line)# logging synchronous
+Router(config-line)# exit
+Router# show line vty 0 4
+Router# show users
+Router# show sessions
+Router# clear line vty 0
+■ Telnet (Legacy)
+Router(config)# line vty 0 4
+Router(config-line)# transport input telnet
+Router(config-line)# password TelnetPass
+Router(config-line)# login
+Router> telnet 192.168.1.1
+Router# disconnect
+Router# show tcp brief
+■ NTP
+Router(config)# ntp server 192.168.10.5
+Router(config)# ntp server 0.pool.ntp.org
+Router(config)# ntp master 1
+Router(config)# ntp source GigabitEthernet0/3
+Router(config)# ntp update-calendar
+Router# show ntp status
+
+
+--- Page Break ---
+
+Router# show ntp associations
+Router# show calendar
+■ SNMP
+Router(config)# snmp-server community public ro
+Router(config)# snmp-server community private rw
+Router(config)# snmp-server location DataCenter-Cairo
+Router(config)# snmp-server contact admin@lab.local
+Router(config)# snmp-server host 192.168.10.100 version 2c public
+Router(config)# snmp-server enable traps
+Router(config)# snmp-server enable traps bgp
+Router(config)# snmp-server enable traps ospf
+Router(config)# snmp-server group MGMT v3 priv
+Router# show snmp
+Router# show snmp community
+Router# show snmp user
+Router# show snmp group
+■ Syslog
+Router(config)# logging on
+Router(config)# logging host 192.168.10.100
+Router(config)# logging trap debugging
+Router(config)# logging trap informational
+Router(config)# logging trap warnings
+Router(config)# logging buffered 16384
+Router(config)# logging console informational
+Router(config)# logging source-interface GigabitEthernet0/3
+Router(config)# service timestamps log datetime msec show-timezone
+Router(config)# service timestamps debug datetime msec
+Router# show logging
+Router# clear logging
+Layer 6 | Presentation Layer — Encryption & Tunnels
+■ GRE Tunnel
+Router(config)# interface Tunnel0
+Router(config-if)# ip address 172.16.0.1 255.255.255.252
+Router(config-if)# tunnel source GigabitEthernet0/0
+Router(config-if)# tunnel destination 203.0.113.2
+Router(config-if)# tunnel mode gre ip
+Router(config-if)# keepalive 10 3
+Router(config-if)# no shutdown
+Router# show interfaces tunnel 0
+Router# show ip route
+■ IPsec Site-to-Site VPN
+Router(config)# crypto isakmp policy 10
+Router(config-isakmp)# encryption aes 256
+Router(config-isakmp)# hash sha256
+Router(config-isakmp)# authentication pre-share
+Router(config-isakmp)# group 14
+Router(config-isakmp)# lifetime 86400
+Router(config-isakmp)# exit
+Router(config)# crypto isakmp key VPNkey123! address 203.0.113.2
+Router(config)# crypto ipsec transform-set TS esp-aes 256 esp-sha256-hmac
+Router(cfg-crypto-trans)# mode tunnel
+
+
+--- Page Break ---
+
+Router(cfg-crypto-trans)# exit
+Router(config)# ip access-list extended VPN-TRAFFIC
+Router(config-ext-nacl)# permit ip 192.168.1.0 0.0.0.255 192.168.2.0 0.0.0.255
+Router(config)# crypto map VPN-MAP 10 ipsec-isakmp
+Router(config-crypto-map)# set peer 203.0.113.2
+Router(config-crypto-map)# set transform-set TS
+Router(config-crypto-map)# match address VPN-TRAFFIC
+Router(config-crypto-map)# exit
+Router(config-if)# crypto map VPN-MAP
+Router# show crypto isakmp sa
+Router# show crypto ipsec sa
+Router# show crypto map
+Router# debug crypto isakmp
+Router# debug crypto ipsec
+■ SSL VPN (WebVPN)
+Router(config)# ip http secure-server
+Router(config)# webvpn gateway GW1
+Router(config-webvpn-gateway)# ip address 203.0.113.1 port 443
+Router(config-webvpn-gateway)# ssl trustpoint MY-CA
+Router(config-webvpn-gateway)# inservice
+Router(config)# webvpn context CTX1
+Router(config-webvpn-context)# gateway GW1
+Router(config-webvpn-context)# inservice
+Router# show webvpn gateway
+Router# show webvpn context
+Router# show webvpn session
+■ PKI Certificates
+Router(config)# crypto pki trustpoint MY-CA
+Router(ca-trustpoint)# enrollment url http://192.168.10.5:80
+Router(ca-trustpoint)# subject-name CN=R1,O=Lab,C=EG
+Router(ca-trustpoint)# revocation-check none
+Router(ca-trustpoint)# exit
+Router(config)# crypto pki authenticate MY-CA
+Router(config)# crypto pki enroll MY-CA
+Router# show crypto pki certificates
+Router# show crypto pki trustpoints
+Router# show crypto pki server
+Layer 7 | Application Layer — Services & Protocols
+■ DNS
+Router(config)# ip dns server
+Router(config)# ip name-server 8.8.8.8
+Router(config)# ip name-server 1.1.1.1
+Router(config)# ip domain-name lab.local
+Router(config)# ip domain-lookup
+Router(config)# no ip domain-lookup
+Router(config)# ip host www 192.168.1.10
+Router# show hosts
+Router# debug ip dns
+Router# ping www.google.com
+■ HTTP Server (Management)
+Router(config)# ip http server
+
+
+--- Page Break ---
+
+Router(config)# ip http secure-server
+Router(config)# ip http port 8080
+Router(config)# ip http secure-port 8443
+Router(config)# ip http authentication local
+Router(config)# ip http max-connections 10
+Router(config)# ip http timeout-policy idle 60 life 86400 requests 10000
+Router# show ip http server status
+Router# show ip http server secure status
+■ TFTP / FTP
+Router(config)# ip tftp source-interface GigabitEthernet0/3
+Router# copy running-config tftp://192.168.10.50/r1-config.cfg
+Router# copy tftp://192.168.10.50/r1-config.cfg running-config
+Router# copy running-config ftp://admin:pass@192.168.10.50/r1.cfg
+Router(config)# ip ftp username admin
+Router(config)# ip ftp password FTPpass123
+■ Debugging & Troubleshooting
+Router# ping 192.168.1.1
+Router# ping 192.168.1.1 repeat 100
+Router# ping 192.168.1.1 source GigabitEthernet0/0
+Router# traceroute 8.8.8.8
+Router# traceroute 8.8.8.8 source GigabitEthernet0/0
+Router# show ip traffic
+Router# show protocols
+Router# show tcp brief
+Router# show udp
+Router# debug ip packet
+Router# debug ip icmp
+Router# undebug all
+Router# terminal monitor
+Router# terminal no monitor
+■ Device Hardening Basics
+Router(config)# no ip http server
+Router(config)# no ip finger
+Router(config)# no service tcp-small-servers
+Router(config)# no service udp-small-servers
+Router(config)# no cdp run
+Router(config)# no ip source-route
+Router(config)# no ip bootp server
+Router(config)# no ip gratuitous-arps
+Router(config)# no ip domain-lookup
+Router(config)# service password-encryption
+Router(config)# security passwords min-length 10
+Router(config)# login block-for 60 attempts 3 within 30
+Router# show running-config | include no

@@ -180,10 +180,10 @@ def _identify_dynamips_platform(
 ) -> str:
     platform = properties.get("platform")
     if platform:
-        return str(platform).lower()
+        return str(platform).lower().replace("cisco ", "c")
     template_name = node.get("template_name", "")
     if template_name:
-        return str(template_name).lower()
+        return str(template_name).lower().replace("cisco ", "c")
     logger.debug(
         "Node %s: could not determine dynamips platform, defaulting to c7200",
         node.get("node_id"),

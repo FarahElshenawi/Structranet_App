@@ -21,6 +21,28 @@ Sources: GNS3 server v2.2 source code
   - gns3server/schemas/qemu_template.py           (QEMU schema & defaults)
   - gns3server/schemas/docker_template.py         (Docker schema & defaults)
   - gns3-registry/appliances/*.gns3a              (QEMU/Docker appliance files)
+
+V2 changes vs V1
+─────────────────
+  • Added 17 new QEMU appliances covering all major GNS3 device categories:
+    Cisco IOSv, IOSv-L2, ASAv, Nexus 9000v, Catalyst 8000v,
+    Juniper vMX, vSRX, Arista vEOS, Cumulus VX,
+    FortiGate, Palo Alto VM-100, Check Point Gaia,
+    VyOS, Dell OS10, Ubuntu, Kali Linux, Windows,
+    Ostinato, TRex
+  • Added port_name_format / port_segment_size / first_port_name per appliance
+    so the exporter can generate correct Cisco/Juniper/Arista interface names
+    (e.g. GigabitEthernet0/0, ge-0/0/0, Ethernet1/1, swp1).
+  • Added multi-disk support fields (hdb_disk_image, hdb_disk_interface,
+    hdc_disk_image, hdc_disk_interface) for appliances that require multiple
+    disks (Nexus 9000v, vMX, vEOS).
+  • Added appliance-specific boot/VM properties (kvm, options, boot_priority,
+    adapter_type, symbol) so the exporter injects correct QEMU flags.
+  • Catalog keys that are NOT in the GNS3 QEMU/Docker schema are prefixed
+    with underscore (e.g. _symbol, _category) so _clean_properties can
+    identify and strip them before export.  Schema-valid keys (kvm, options,
+    boot_priority, adapter_type, linked_clone, cpus, usage, first_port_name)
+    pass through naturally.
 """
 
 from typing import Any, Dict, List
@@ -45,6 +67,36 @@ _DEFAULT_HUB_PORTS: List[Dict[str, Any]] = [
     {"name": f"Ethernet{i}", "port_number": i}
     for i in range(8)
 ]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Keys in APPLIANCE_CATALOG entries that are NOT valid GNS3 node properties.
+#  These are metadata used only by StructraNet AI's exporter / LLM pipeline.
+#  _clean_properties() strips them before writing to the .gns3project JSON.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+CATALOG_META_KEYS: frozenset = frozenset([
+    "port_name_format",
+    "port_segment_size",
+    "first_port_name",
+    "_symbol",
+    "_category",
+])
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  QEMU schema-valid keys that _clean_properties should ALLOW through.
+#  These are all legitimate qemu_template.py schema properties.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+QEMU_SCHEMA_KEYS: frozenset = frozenset([
+    "adapter_type", "adapters", "boot_priority", "console_type",
+    "cpus", "hda_disk_image", "hda_disk_interface",
+    "hdb_disk_image", "hdb_disk_interface",
+    "hdc_disk_image", "hdc_disk_interface",
+    "hdd_disk_image", "hdd_disk_interface",
+    "kvm", "linked_clone", "on_close", "options",
+    "platform", "process_priority", "ram",
+    "usage", "mac_address",
+])
 
 
 APPLIANCE_CATALOG: Dict[str, Dict[str, Any]] = {
@@ -80,7 +132,7 @@ APPLIANCE_CATALOG: Dict[str, Dict[str, Any]] = {
     "Cisco 3725": {
         "node_type":         "dynamips",
         "platform":          "c3725",
-        "image":             "c3725-adventerprisek9-mz.124-25d.image",
+        "image":             "c3745-adventerprisek9-mz.124-25d.image",
         "ram":               128,          # GNS3 default for c3725
         "nvram":             256,          # GNS3 default for c3725
         "slot0":             "GT96100-FE",
@@ -301,7 +353,7 @@ APPLIANCE_CATALOG: Dict[str, Dict[str, Any]] = {
         "adapters":              4,
         "adapter_type":          "vmxnet3",
         "console_type":          "telnet",
-        "port_name_format":      "Gi{port1}",
+        "port_name_format":      "GigabitEthernet{port1}",
         "port_segment_size":     0,
         "linked_clone":          True,
         "boot_priority":         "c",
@@ -351,7 +403,7 @@ APPLIANCE_CATALOG: Dict[str, Dict[str, Any]] = {
         "adapters":              4,
         "adapter_type":          "virtio-net-pci",
         "console_type":          "telnet",
-        "port_name_format":      "Ethernet{0}",
+        "port_name_format":      "eth{0}",
         "port_segment_size":     0,
         "linked_clone":          True,
         "kvm":                   "allow",
@@ -388,6 +440,379 @@ APPLIANCE_CATALOG: Dict[str, Dict[str, Any]] = {
         "port_segment_size":     0,
         "linked_clone":          True,
         "kvm":                   "allow",
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  QEMU — CISCO  (must-have / popular additions)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    "Cisco IOSv": {
+        # Source: gns3-registry/appliances/cisco-iosv.gns3a
+        "node_type":             "qemu",
+        "hda_disk_image":        "vios-adventerprisek9-mz.SPA.158-3.M3.qcow2",
+        "hda_disk_interface":    "ide",
+        "ram":                   512,
+        "cpus":                  1,
+        "adapters":              4,
+        "adapter_type":          "e1000",
+        "console_type":          "telnet",
+        "port_name_format":      "GigabitEthernet0/{0}",
+        "port_segment_size":     0,
+        "first_port_name":       "GigabitEthernet0/0",
+        "linked_clone":          True,
+        "kvm":                   "allow",
+        "_symbol":               ":/symbols/router.svg",
+    },
+
+    "Cisco IOSv-L2": {
+        # Source: gns3-registry/appliances/cisco-iosvl2.gns3a
+        "node_type":             "qemu",
+        "hda_disk_image":        "vios_l2-adventerprisek9-mz.SPA.158-3.M3.qcow2",
+        "hda_disk_interface":    "ide",
+        "ram":                   1024,
+        "cpus":                  1,
+        "adapters":              8,
+        "adapter_type":          "e1000",
+        "console_type":          "telnet",
+        "port_name_format":      "GigabitEthernet0/{0}",
+        "port_segment_size":     0,
+        "first_port_name":       "GigabitEthernet0/0",
+        "linked_clone":          True,
+        "kvm":                   "allow",
+        "_symbol":               ":/symbols/switch.svg",
+    },
+
+    "Cisco ASAv": {
+        # Source: gns3-registry/appliances/cisco-asav.gns3a
+        "node_type":             "qemu",
+        "hda_disk_image":        "asav-9162-ssh.qcow2",
+        "hda_disk_interface":    "ide",
+        "ram":                   2048,
+        "cpus":                  1,
+        "adapters":              4,
+        "adapter_type":          "e1000",
+        "console_type":          "telnet",
+        "port_name_format":      "GigabitEthernet0/{0}",
+        "port_segment_size":     0,
+        "first_port_name":       "GigabitEthernet0/0",
+        "linked_clone":          True,
+        "kvm":                   "allow",
+        "options":               "-machine accel=kvm -cpu host -smp 2",
+        "_symbol":               ":/symbols/firewall.svg",
+    },
+
+    "Cisco Nexus 9000v": {
+        # Source: gns3-registry/appliances/cisco-n9kv.gns3a
+        # Multi-disk: hda = boot, hdb = N9K system image
+        "node_type":             "qemu",
+        "hda_disk_image":        "n9kv-disk-a.qcow2",
+        "hda_disk_interface":    "ide",
+        "hdb_disk_image":        "n9kv-disk-b.qcow2",
+        "hdb_disk_interface":    "ide",
+        "ram":                   8192,
+        "cpus":                  2,
+        "adapters":              8,
+        "adapter_type":          "e1000",
+        "console_type":          "telnet",
+        "port_name_format":      "Ethernet1/{0}",
+        "port_segment_size":     0,
+        "first_port_name":       "Ethernet1/1",
+        "linked_clone":          True,
+        "kvm":                   "require",
+        "boot_priority":         "c",
+        "_symbol":               ":/symbols/switch.svg",
+    },
+
+    "Cisco Catalyst 8000v": {
+        # Source: gns3-registry/appliances/cisco-cat8000v.gns3a
+        "node_type":             "qemu",
+        "hda_disk_image":        "cat8000v-universalk9.17.06.01a.qcow2",
+        "hda_disk_interface":    "ide",
+        "ram":                   4096,
+        "cpus":                  2,
+        "adapters":              4,
+        "adapter_type":          "vmxnet3",
+        "console_type":          "telnet",
+        "port_name_format":      "GigabitEthernet1/{0}",
+        "port_segment_size":     0,
+        "first_port_name":       "GigabitEthernet1/0",
+        "linked_clone":          True,
+        "kvm":                   "require",
+        "boot_priority":         "c",
+        "_symbol":               ":/symbols/router.svg",
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  QEMU — JUNIPER  (popular additions)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    "Juniper vMX": {
+        # Source: gns3-registry/appliances/juniper-vmx.gns3a
+        # Multi-disk: hda = boot (VFP), hdb = RBD (VCP)
+        "node_type":             "qemu",
+        "hda_disk_image":        "jinstall-vfpx-17.3R1.10.img",
+        "hda_disk_interface":    "ide",
+        "hdb_disk_image":        "jinstall-vcp-17.3R1.10.img",
+        "hdb_disk_interface":    "ide",
+        "ram":                   4096,
+        "cpus":                  2,
+        "adapters":              4,
+        "adapter_type":          "e1000",
+        "console_type":          "telnet",
+        "port_name_format":      "ge-0/0/{0}",
+        "port_segment_size":     0,
+        "first_port_name":       "ge-0/0/0",
+        "linked_clone":          True,
+        "kvm":                   "require",
+        "boot_priority":         "c",
+        "_symbol":               ":/symbols/router.svg",
+    },
+
+    "Juniper vSRX": {
+        # Source: gns3-registry/appliances/juniper-vsrx.gns3a
+        "node_type":             "qemu",
+        "hda_disk_image":        "junos-vsrx-12.1X47-D15.4-domestic.qcow2",
+        "hda_disk_interface":    "ide",
+        "ram":                   4096,
+        "cpus":                  2,
+        "adapters":              4,
+        "adapter_type":          "e1000",
+        "console_type":          "telnet",
+        "port_name_format":      "ge-0/0/{0}",
+        "port_segment_size":     0,
+        "first_port_name":       "ge-0/0/0",
+        "linked_clone":          True,
+        "kvm":                   "require",
+        "boot_priority":         "c",
+        "_symbol":               ":/symbols/firewall.svg",
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  QEMU — ARISTA / DATA CENTER  (popular additions)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    "Arista vEOS": {
+        # Source: gns3-registry/appliances/arista-veos.gns3a
+        # Multi-disk: hda = Aboot ISO, hdb = vEOS-lab disk
+        "node_type":             "qemu",
+        "hda_disk_image":        "Aboot-veos-serial-8.0.1.iso",
+        "hda_disk_interface":    "ide",
+        "hdb_disk_image":        "vEOS-lab-4.27.0F.vmdk",
+        "hdb_disk_interface":    "ide",
+        "ram":                   2048,
+        "cpus":                  1,
+        "adapters":              8,
+        "adapter_type":          "e1000",
+        "console_type":          "telnet",
+        "port_name_format":      "Ethernet1/{0}",
+        "port_segment_size":     0,
+        "first_port_name":       "Ethernet1/1",
+        "linked_clone":          True,
+        "kvm":                   "allow",
+        "_symbol":               ":/symbols/switch.svg",
+    },
+
+    "Cumulus VX": {
+        # Source: gns3-registry/appliances/cumulus-vx.gns3a
+        "node_type":             "qemu",
+        "hda_disk_image":        "cumulus-vx-4.4.0-qemu5.qcow2",
+        "hda_disk_interface":    "virtio",
+        "ram":                   1024,
+        "cpus":                  1,
+        "adapters":              4,
+        "adapter_type":          "e1000",
+        "console_type":          "telnet",
+        "port_name_format":      "swp{0}",
+        "port_segment_size":     0,
+        "first_port_name":       "swp1",
+        "linked_clone":          True,
+        "kvm":                   "allow",
+        "_symbol":               ":/symbols/switch.svg",
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  QEMU — FIREWALL / SECURITY  (popular additions)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    "FortiGate": {
+        # Source: gns3-registry/appliances/fortigate.gns3a
+        "node_type":             "qemu",
+        "hda_disk_image":        "FGT_VM64_KVM-v7.2.3.qcow2",
+        "hda_disk_interface":    "virtio",
+        "ram":                   1024,
+        "cpus":                  1,
+        "adapters":              4,
+        "adapter_type":          "virtio-net-pci",
+        "console_type":          "telnet",
+        "port_name_format":      "port{0}",
+        "port_segment_size":     0,
+        "first_port_name":       "port1",
+        "linked_clone":          True,
+        "kvm":                   "allow",
+        "_symbol":               ":/symbols/firewall.svg",
+    },
+
+    "Palo Alto VM-100": {
+        # Source: gns3-registry/appliances/paloalto-vm.gns3a
+        "node_type":             "qemu",
+        "hda_disk_image":        "PA-VM-10.2.3.qcow2",
+        "hda_disk_interface":    "ide",
+        "ram":                   4096,
+        "cpus":                  2,
+        "adapters":              4,
+        "adapter_type":          "e1000",
+        "console_type":          "telnet",
+        "port_name_format":      "ethernet1/{0}",
+        "port_segment_size":     0,
+        "first_port_name":       "ethernet1/1",
+        "linked_clone":          True,
+        "kvm":                   "require",
+        "_symbol":               ":/symbols/firewall.svg",
+    },
+
+    "Check Point Gaia": {
+        # Source: gns3-registry/appliances/checkpoint.gns3a
+        "node_type":             "qemu",
+        "hda_disk_image":        "cp_sg_R81.20_qfw1kvm.qcow2",
+        "hda_disk_interface":    "virtio",
+        "ram":                   4096,
+        "cpus":                  2,
+        "adapters":              4,
+        "adapter_type":          "e1000",
+        "console_type":          "vnc",
+        "port_name_format":      "eth{0}",
+        "port_segment_size":     0,
+        "linked_clone":          True,
+        "kvm":                   "require",
+        "_symbol":               ":/symbols/firewall.svg",
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  QEMU — ROUTER / OS  (also common additions)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    "VyOS": {
+        # Source: gns3-registry/appliances/vyos.gns3a
+        "node_type":             "qemu",
+        "hda_disk_image":        "vyos-1.4-rolling-202312120017-amd64.qcow2",
+        "hda_disk_interface":    "virtio",
+        "ram":                   1024,
+        "cpus":                  1,
+        "adapters":              4,
+        "adapter_type":          "virtio-net-pci",
+        "console_type":          "telnet",
+        "port_name_format":      "eth{0}",
+        "port_segment_size":     0,
+        "linked_clone":          True,
+        "kvm":                   "allow",
+        "_symbol":               ":/symbols/router.svg",
+    },
+
+    "Dell OS10": {
+        # Source: gns3-registry/appliances/dell-os10.gns3a
+        "node_type":             "qemu",
+        "hda_disk_image":        "OS10-Enterprise-10.5.4.1.qcow2",
+        "hda_disk_interface":    "virtio",
+        "ram":                   4096,
+        "cpus":                  2,
+        "adapters":              8,
+        "adapter_type":          "e1000",
+        "console_type":          "telnet",
+        "port_name_format":      "ethernet1/1/{0}",
+        "port_segment_size":     0,
+        "first_port_name":       "ethernet1/1/1",
+        "linked_clone":          True,
+        "kvm":                   "allow",
+        "_symbol":               ":/symbols/switch.svg",
+    },
+
+    "Ubuntu": {
+        # Source: gns3-registry/appliances/ubuntu.gns3a
+        "node_type":             "qemu",
+        "hda_disk_image":        "ubuntu-22.04-desktop-amd64.qcow2",
+        "hda_disk_interface":    "virtio",
+        "ram":                   2048,
+        "cpus":                  2,
+        "adapters":              1,
+        "adapter_type":          "virtio-net-pci",
+        "console_type":          "vnc",
+        "port_name_format":      "ens{0}",
+        "port_segment_size":     0,
+        "linked_clone":          True,
+        "kvm":                   "allow",
+        "_symbol":               ":/symbols/computer.svg",
+    },
+
+    "Kali Linux": {
+        # Source: gns3-registry/appliances/kali.gns3a
+        "node_type":             "qemu",
+        "hda_disk_image":        "kali-linux-2023.4-qemu-amd64.qcow2",
+        "hda_disk_interface":    "virtio",
+        "ram":                   2048,
+        "cpus":                  2,
+        "adapters":              1,
+        "adapter_type":          "virtio-net-pci",
+        "console_type":          "vnc",
+        "port_name_format":      "eth{0}",
+        "port_segment_size":     0,
+        "linked_clone":          True,
+        "kvm":                   "allow",
+        "_symbol":               ":/symbols/computer.svg",
+    },
+
+    "Windows": {
+        # Source: gns3-registry/appliances/windows.gns3a
+        "node_type":             "qemu",
+        "hda_disk_image":        "windows-10-x64.qcow2",
+        "hda_disk_interface":    "sata",
+        "ram":                   4096,
+        "cpus":                  2,
+        "adapters":              1,
+        "adapter_type":          "e1000",
+        "console_type":          "vnc",
+        "port_name_format":      "Ethernet{0}",
+        "port_segment_size":     0,
+        "linked_clone":          True,
+        "kvm":                   "allow",
+        "_symbol":               ":/symbols/computer.svg",
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  QEMU — TRAFFIC GENERATORS  (also common additions)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    "Ostinato": {
+        # Source: gns3-registry/appliances/ostinato.gns3a
+        "node_type":             "qemu",
+        "hda_disk_image":        "ostinato-drone-1.2.qcow2",
+        "hda_disk_interface":    "virtio",
+        "ram":                   1024,
+        "cpus":                  1,
+        "adapters":              4,
+        "adapter_type":          "e1000",
+        "console_type":          "vnc",
+        "port_name_format":      "eth{0}",
+        "port_segment_size":     0,
+        "linked_clone":          True,
+        "kvm":                   "allow",
+        "_symbol":               ":/symbols/traffic_generator.svg",
+    },
+
+    "TRex": {
+        # Source: gns3-registry/appliances/trex.gns3a
+        "node_type":             "qemu",
+        "hda_disk_image":        "trex-v3.02.qcow2",
+        "hda_disk_interface":    "virtio",
+        "ram":                   2048,
+        "cpus":                  2,
+        "adapters":              4,
+        "adapter_type":          "e1000",
+        "console_type":          "telnet",
+        "port_name_format":      "eth{0}",
+        "port_segment_size":     0,
+        "linked_clone":          True,
+        "kvm":                   "allow",
+        "_symbol":               ":/symbols/traffic_generator.svg",
     },
 
     # ═══════════════════════════════════════════════════════════════════════════

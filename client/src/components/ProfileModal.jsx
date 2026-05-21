@@ -1,16 +1,12 @@
 import { useState, useEffect, useRef } from "react";
-import { getUserProfile, updateUserProfile } from "../lib/api";
+import { getUserProfile, updateUserProfile, getCatalog } from "../lib/api";
 
 const PRIMARY = "#166534";
 const PRIMARY_HOVER = "#14532D";
 const BORDER = "#E5E7EB";
 const MUTED = "#F3F4F6";
 
-// ── Helper: build auth headers inline (mirrors api.js authHeaders) ──
-function authHeaders(extra = {}) {
-  const t = localStorage.getItem("token");
-  return t ? { Authorization: `Bearer ${t}`, ...extra } : extra;
-}
+// authHeaders removed — now using api.js functions which handle auth internally
 
 export default function ProfileModal({ onClose, onSaved }) {
   const [version, setVersion] = useState("");
@@ -31,9 +27,9 @@ export default function ProfileModal({ onClose, onSaved }) {
   const dropdownRef = useRef(null);
 
   // ── Load catalog from API on mount ──
+  // FIX: Use getCatalog() from api.js instead of raw fetch for consistent auth handling
   useEffect(() => {
-    fetch("/api/catalog", { headers: authHeaders() })
-      .then((r) => r.json())
+    getCatalog()
       .then((data) => {
         const raw = Array.isArray(data) ? data : [];
         // Map backend shape {name, gns3_type, category, port_count}

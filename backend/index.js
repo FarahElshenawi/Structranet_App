@@ -240,13 +240,27 @@ app.post("/api/chats/:chatId/messages", requireAuth, async (req, res) => {
 
 app.delete("/api/chats/:chatId", requireAuth, async (req, res) => {
   if (mongoose.connection.readyState !== 1) return res.json({ message: "Deleted" });
-  try { await Chat.findByIdAndDelete(req.params.chatId); await UserChat.deleteOne({ chatId: req.params.chatId }); res.json({ message: "Deleted" }); }
+  try {
+    await Chat.findByIdAndDelete(req.params.chatId);
+    // FIX: UserChat stores chats as an array — must $pull from the array, not deleteOne
+    await UserChat.updateOne(
+      { userId: req.userId },
+      { $pull: { chats: { _id: req.params.chatId } } }
+    );
+    res.json({ message: "Deleted" });
+  }
   catch (e) { res.status(500).json({ error: "Failed" }); }
 });
 
 app.put("/api/chats/:chatId/session", requireAuth, async (req, res) => {
   if (mongoose.connection.readyState !== 1) return res.json({ message: "Updated" });
-  try { const chat = await Chat.findOne({ _id: req.params.chatId, userId: req.userId }); if (!chat) return res.status(404); chat.sessionId = req.body.sessionId; await chat.save(); res.json({ message: "Updated" }); }
+  try {
+    const chat = await Chat.findOne({ _id: req.params.chatId, userId: req.userId });
+    if (!chat) return res.status(404);
+    chat.sessionId = req.body.sessionId;
+    await chat.save();
+    res.json({ message: "Updated" });
+  }
   catch (e) { res.status(500).json({ error: "Failed" }); }
 });
 
@@ -360,13 +374,10 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", service: "express", db: mongoose.connection.readyState === 1 ? "connected" : "disconnected" });
 });
 
-app.get("/api/ai/health", async (req, res) => {
-  try {
-    const aiRes = await fetch(`${FASTAPI_URL}/health`, { signal: AbortSignal.timeout(5000) });
-    if (aiRes.ok) return res.json({ status: "ok", service: "fastapi", ...(await aiRes.json().catch(() => ({}))) });
-    res.status(502).json({ status: "error", service: "fastapi" });
-  } catch (e) { res.status(502).json({ status: "error", service: "fastapi", message: "Cannot reach AI engine" }); }
-});
+// NOTE: /api/ai/health is handled by the proxy middleware above (line 58).
+// The proxy forwards it to FastAPI's /health endpoint.
+// Do NOT register a separate /api/ai/health route here — it would be dead code
+// since app.use("/api/ai") catches all /api/ai/* requests first.
 
 app.listen(port, () => {
   console.log(`🚀 Server running on port ${port}`);

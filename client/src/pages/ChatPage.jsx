@@ -1093,6 +1093,50 @@ export default function ChatPage() {
   const bottomRef = useRef(null);
   const profile = useRef(null); // loaded from /api/profile on mount
 
+  // ── Refs to track current SSE state for snapshotting ──────────
+  // These let us snapshot the current bubble data before reset() clears it.
+  const sseStateRef = useRef({
+    thoughts: [], topology: null, requirements: null, summary: null,
+    configTexts: {}, phase: 'idle', subPhase: null, status: 'idle',
+    exportData: null, agentMessage: '', toolCallsMade: [],
+  });
+
+  // Keep the ref in sync with the actual SSE state
+  useEffect(() => {
+    sseStateRef.current = {
+      thoughts, topology, requirements, summary,
+      configTexts, phase, subPhase, status,
+      exportData, agentMessage, toolCallsMade,
+    };
+  }, [thoughts, topology, requirements, summary,
+      configTexts, phase, subPhase, status,
+      exportData, agentMessage, toolCallsMade]);
+
+  // ── Snapshot current live bubble data into messages array ────
+  // Call this BEFORE reset()/startStream() to preserve the previous AI bubble's content.
+  const snapshotCurrentBubble = useCallback(() => {
+    const snap = { ...sseStateRef.current };
+    setMessages((prev) => {
+      // Find the last 'ai' message and attach the snapshot
+      const idx = prev.findLastIndex((m) => m.role === 'ai');
+      if (idx < 0) return prev;
+      const updated = [...prev];
+      updated[idx] = { ...updated[idx], bubbleData: snap };
+      return updated;
+    });
+  }, []);
+
+  // ── Auto-snapshot when a bubble completes ───────────────────
+  // When status transitions to 'complete' or 'error', snapshot automatically
+  // so the bubble data is preserved even without an explicit call.
+  const prevStatusRef = useRef(status);
+  useEffect(() => {
+    if ((status === 'complete' || status === 'error' || status === 'review')
+        && prevStatusRef.current !== status) {
+      snapshotCurrentBubble();
+    }
+    prevStatusRef.current = status;
+  }, [status, snapshotCurrentBubble]);
   // Derived
   const isStreaming  = status === "streaming" || status === "exporting";
   const isReview     = status === "review";
@@ -1108,17 +1152,24 @@ export default function ChatPage() {
       const p = d?.profile || {};
       profile.current = p;
       // ── First-visit profile popup ──
-      // If profile has no version AND no images, show the profile modal
+      // Only show if the profile has NO version AND NO images at all.
+      // This prevents the popup from showing every time the page loads
+      // when the user previously skipped it.
       const hasVersion = p.version && p.version.trim() !== "";
       const hasImages = (Array.isArray(p.images) && p.images.length > 0)
         || (typeof p.images === "object" && p.images !== null && Object.keys(p.images).length > 0);
-      if (!hasVersion && !hasImages) {
+      // FIX: Only show profile popup if there's genuinely no profile data.
+      // If the user already saved a profile (even partially), don't force the popup.
+      const hasAnyProfileData = hasVersion || hasImages || p.features;
+      if (!hasAnyProfileData) {
         setProfileOpen(true);
       }
     }).catch(() => {
-      // Profile not loaded — also trigger profile popup for first visit
+      // Profile not loaded — could be a 404 (no profile yet) or server error.
+      // Don't force the popup on server error — only on first visit (404).
       profile.current = {};
-      setProfileOpen(true);
+      // Only show popup if it's genuinely a first visit (no profile exists)
+      // Don't block the UI if the server is just temporarily unavailable.
     });
   }, []);
 
@@ -1130,7 +1181,12 @@ export default function ChatPage() {
   // ── Send a user prompt (LLM Tool Calling) ────────────────────────
   // FIX: Only create a chat entry in the database ONCE per conversation (first message only).
   // Previously, every message created a new chat entry.
+  // FIX: Use agentChat HTTP response for instant agent_message display,
+  // while SSE streams topology/config data in real-time.
   const handleSend = useCallback(async (text) => {
+    // 0. Snapshot the current live bubble before we start a new stream
+    snapshotCurrentBubble();
+
     // 1. Push user bubble
     setMessages((prev) => [...prev, { role: "user", text }]);
     // 2. Push empty AI bubble (will fill via SSE + agentChat response)
@@ -1153,14 +1209,8 @@ export default function ChatPage() {
 
       // Send message to the Tool Calling agent
       // The LLM decides which tools to call; SSE events stream topology/config/etc.
-      const response = await agentChat(sid, text);
-
-      // The API also returns { message, tool_calls_made } as a fallback
-      // SSE agent_message event is the primary source, but we update from
-      // the HTTP response too (in case SSE missed it)
-      if (response?.message && !agentMessage) {
-        // agentMessage will be set by SSE; this is a fallback
-      }
+      // The HTTP response also contains { message, tool_calls_made } for instant display.
+      const agentResponse = await agentChat(sid, text);
 
       // Save to chat history ONLY on the first message of a conversation
       if (!chatId) {
@@ -1171,13 +1221,32 @@ export default function ChatPage() {
           setHistory((h) => [chat, ...h.filter((c) => (c._id || c.id) !== cid)]);
           if (sid) await updateChatSessionId(cid, sid);
         } catch { /* non-critical */ }
+      } else {
+        // Persist subsequent user messages to the existing chat record
+        try {
+          await fetch(`/api/chats/${chatId}/messages`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${localStorage.getItem("token")}`,
+            },
+            body: JSON.stringify({
+              messages: [
+                { role: "user", content: text },
+                { role: "assistant", content: agentResponse?.message || "" },
+              ],
+            }),
+          });
+        } catch { /* non-critical */ }
       }
-      // Subsequent messages do NOT create new chat entries — they just
-      // continue the existing conversation via agentChat(sid, text)
     } catch (err) {
+      // CRITICAL FIX: Reset SSE state on error so the input re-enables.
+      // Without this, the status stays "streaming" forever and the user can't type.
+      stopStream();
+      reset();
       setMessages((prev) => [...prev, { role: "error", text: err.message }]);
     }
-  }, [sessionId, chatId, agentMessage, startStream]);
+  }, [sessionId, chatId, startStream, stopStream, reset, snapshotCurrentBubble]);
 
   // ── Edit topology — focuses chat input with a hint placeholder ──
   const handleEditFocus = useCallback(() => {
@@ -1197,18 +1266,24 @@ export default function ChatPage() {
       : secProfile === "basic" ? "basic"
       : "no (pure lab)";
     const msg = `I approve this topology. Please export it with ${secLabel} security hardening.`;
+
+    // Snapshot current bubble before reset
+    snapshotCurrentBubble();
+
     // Push user message to chat
     setMessages((prev) => [...prev, { role: "user", text: msg }]);
     setMessages((prev) => [...prev, { role: "ai", id: Date.now() }]);
-    reset();
 
     try {
       startStream(sessionId);
       await agentChat(sessionId, msg);
     } catch (err) {
+      // CRITICAL FIX: Reset SSE state on error so the input re-enables.
+      stopStream();
+      reset();
       setMessages((prev) => [...prev, { role: "error", text: err.message }]);
     }
-  }, [sessionId, reset, startStream]);
+  }, [sessionId, startStream, stopStream, reset, snapshotCurrentBubble]);
 
   // ── Load a past chat from history ────────────────────────────
   const handleSelectHistory = useCallback(async (chat) => {
@@ -1404,20 +1479,22 @@ export default function ChatPage() {
               // are completed (no cursor, no buttons)
               if (msg.role === "ai") {
                 const isLive = idx === liveAiBubbleIdx;
+                // Use bubbleData snapshot for non-live bubbles, live SSE state for the current one
+                const bd = msg.bubbleData;
                 return (
                   <AIBubble
                     key={msg.id || idx}
-                    thoughts={isLive ? thoughts : []}
-                    topology={isLive ? topology : null}
-                    requirements={isLive ? requirements : null}
-                    summary={isLive ? summary : null}
-                    configTexts={isLive ? configTexts : {}}
-                    phase={isLive ? phase : "done"}
-                    subPhase={isLive ? subPhase : null}
-                    status={isLive ? status : "complete"}
-                    exportData={isLive ? exportData : null}
-                    agentMessage={isLive ? agentMessage : ""}
-                    toolCallsMade={isLive ? toolCallsMade : []}
+                    thoughts={isLive ? thoughts : (bd?.thoughts || [])}
+                    topology={isLive ? topology : (bd?.topology || null)}
+                    requirements={isLive ? requirements : (bd?.requirements || null)}
+                    summary={isLive ? summary : (bd?.summary || null)}
+                    configTexts={isLive ? configTexts : (bd?.configTexts || {})}
+                    phase={isLive ? phase : (bd?.phase || "done")}
+                    subPhase={isLive ? subPhase : (bd?.subPhase || null)}
+                    status={isLive ? status : (bd?.status || "complete")}
+                    exportData={isLive ? exportData : (bd?.exportData || null)}
+                    agentMessage={isLive ? agentMessage : (bd?.agentMessage || "")}
+                    toolCallsMade={isLive ? toolCallsMade : (bd?.toolCallsMade || [])}
                     isActive={isLive && isActive}
                     onOpenTopology={() => setTopologyOpen(true)}
                     onEdit={handleEditFocus}

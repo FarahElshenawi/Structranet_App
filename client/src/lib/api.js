@@ -99,9 +99,20 @@ export async function getUserProfile() {
 }
 
 export async function updateUserProfile(profile) {
+  // FIX: Backend PUT /api/profile expects images as a plain object {name: filename},
+  // but ProfileModal stores images as array [{name, filename}].
+  // Convert array → object before sending.
+  const payload = { ...profile };
+  if (Array.isArray(payload.images)) {
+    const imageMap = {};
+    for (const img of payload.images) {
+      if (img.name && img.filename) imageMap[img.name] = img.filename;
+    }
+    payload.images = imageMap;
+  }
   return request("/api/profile", {
     method: "PUT",
-    body: JSON.stringify(profile),
+    body: JSON.stringify(payload),
   });
 }
 
@@ -109,13 +120,18 @@ export async function updateUserProfile(profile) {
 //
 // FIX: FastAPI CreateSessionRequest requires { profile: { ... } }.
 // Sending {} gives 422 Unprocessable Entity.
-// profile.images array must be mapped to template_image_map dict.
+// profile.images can be either array [{name, filename}] or object {name: filename}.
+// Both must be mapped to template_image_map dict.
 export async function createSession(profileFromUser = {}) {
   const imageMap = {};
   if (Array.isArray(profileFromUser.images)) {
+    // Array format: [{name: "Cisco 7200", filename: "c7200.image"}]
     for (const img of profileFromUser.images) {
       if (img.name && img.filename) imageMap[img.name] = img.filename;
     }
+  } else if (typeof profileFromUser.images === "object" && profileFromUser.images !== null) {
+    // Object format: {"Cisco 7200": "c7200.image"} — already correct
+    Object.assign(imageMap, profileFromUser.images);
   }
 
   return request("/api/ai/sessions", {
@@ -167,6 +183,7 @@ export async function approveTopology(sessionId) {
 // ─── Conversational Agent (LLM Tool Calling) ──────────────────────────────────
 // Single endpoint for all chat interactions — the LLM decides which tools to call.
 // Replaces the old FSM endpoints (startGeneration, editTopology, approveTopology).
+// Returns { message, tool_calls_made } — use for instant display while SSE streams.
 export async function agentChat(sessionId, message) {
   return request(`/api/ai/agent/chat`, {
     method: "POST",

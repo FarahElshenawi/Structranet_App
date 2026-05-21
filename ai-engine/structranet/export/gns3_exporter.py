@@ -102,6 +102,10 @@ from structranet.constants.hardware import (
     DYNAMIPS_SLOT_MODULES,
     PLATFORMS_DEFAULT_RAM,
 )
+from structranet.constants.appliances import (
+    APPLIANCE_CATALOG,
+    CATALOG_META_KEYS,
+)
 
 logger = logging.getLogger("gns3_exporter")
 
@@ -438,6 +442,30 @@ def _port_name(node: dict, adapter: int, port: int) -> str:
         return f"Serial{adapter - eth_adapters}/{port}"
 
     if ntype in ("qemu", "docker", "virtualbox", "vmware"):
+        # Look up the appliance catalog entry by template_name.
+        # The catalog provides the correct port_name_format for each
+        # appliance (e.g. GigabitEthernet0/{0} for IOSv, ge-0/0/{0} for vMX,
+        # Ethernet1/{0} for Nexus, swp{0} for Cumulus, port{0} for FortiGate).
+        # If the node already has port_name_format set (from the deterministic
+        # phase or LLM), use that.  Otherwise fall back to the catalog, and
+        # finally to the generic eth{adapter} default.
+        fmt = node.get("port_name_format")
+        if not fmt:
+            template_name = node.get("template_name", "")
+            catalog_entry = APPLIANCE_CATALOG.get(template_name, {})
+            fmt = catalog_entry.get("port_name_format")
+        if fmt:
+            # Expand the format string with adapter/port numbers.
+            # Supported placeholders: {0} = adapter, {1} = port,
+            # {port1} = adapter+1 (1-based), {segment0}/{port0} for IOU-style.
+            try:
+                return fmt.format(adapter, port, port1=adapter + 1,
+                                  segment0=adapter, port0=port)
+            except (IndexError, KeyError, ValueError):
+                # If the format string doesn't match expected placeholders,
+                # do a simple {0} substitution.
+                return fmt.replace("{0}", str(adapter)).replace("{1}", str(port))
+        # Fallback: generic Linux-style naming
         return f"eth{adapter}"
 
     if ntype in ("vpcs", "traceng"):
@@ -611,6 +639,16 @@ def _clean_properties(node: dict) -> dict:
                 "Stripped forbidden pointer key '%s' from %s node", k, ntype,
             )
             continue
+        # Strip catalog metadata keys that are not valid GNS3 schema properties.
+        # These (port_name_format, port_segment_size, first_port_name, _symbol,
+        # _category) are used by the exporter pipeline but must not leak into
+        # the .gns3project node properties dict (schemas enforce
+        # additionalProperties: false).
+        if k in CATALOG_META_KEYS:
+            logger.debug(
+                "Stripped catalog meta key '%s' from %s node", k, ntype,
+            )
+            continue
         if k in _PIPELINE_CONTENT_KEYS and k not in active_content_keys:
             # Content key for a *different* node type — drop it.
             # It is not valid in this node type's schema.
@@ -734,10 +772,41 @@ def _inject_iou_properties(
 
 
 def _inject_qemu_properties(props: dict, template: str) -> None:
-    if "hda_disk_image" not in props:
-        props["hda_disk_image"] = f"{template}.qcow2"
-    props.setdefault("ram",      512)
-    props.setdefault("adapters", 8)
+    """Fill in QEMU properties from the appliance catalog + safe defaults.
+
+    Strategy:
+      1. Look up the template in APPLIANCE_CATALOG.
+      2. For every catalog key that is a valid QEMU schema property,
+         inject it via setdefault (never overwrites existing values).
+      3. If the template is NOT in the catalog, use generic defaults.
+
+    Multi-disk support: catalog entries for appliances like Nexus 9000v,
+    vMX, and vEOS include hdb_disk_image / hdb_disk_interface (and
+    optionally hdc_disk_image / hdc_disk_interface).  These are injected
+    just like hda_disk_image — via setdefault.
+    """
+    catalog_entry = APPLIANCE_CATALOG.get(template, {})
+
+    if catalog_entry:
+        # Inject all QEMU-schema-valid properties from catalog.
+        # setdefault ensures user/LLM-provided values take precedence.
+        for k, v in catalog_entry.items():
+            # Skip metadata keys that are NOT valid QEMU schema properties.
+            # These are used only by the exporter pipeline.
+            if k in CATALOG_META_KEYS:
+                continue
+            # Also skip node_type (it's a routing key, not a QEMU property).
+            if k == "node_type":
+                continue
+            # Only inject keys that are valid in the QEMU template schema.
+            # This prevents leaking catalog-internal data into the .gns3project.
+            props.setdefault(k, v)
+    else:
+        # Template not in catalog — use generic defaults.
+        if "hda_disk_image" not in props:
+            props["hda_disk_image"] = f"{template}.qcow2"
+        props.setdefault("ram",      512)
+        props.setdefault("adapters", 8)
 
 
 def _inject_docker_properties(props: dict, template: str) -> None:
@@ -904,12 +973,23 @@ def convert(
                 uuid.uuid5(uuid.NAMESPACE_DNS, f"gns3-template-{template_name}")
             )
 
+        # Resolve port_name_format and port_segment_size.
+        # Priority: node-level override → appliance catalog → type-based default.
         if ntype == "iou":
             port_name_format  = "Ethernet{segment0}/{port0}"
             port_segment_size = 4
         else:
-            port_name_format  = n.get("port_name_format", "Ethernet{0}")
-            port_segment_size = 0
+            catalog_entry = APPLIANCE_CATALOG.get(template_name, {})
+            port_name_format = (
+                n.get("port_name_format")
+                or catalog_entry.get("port_name_format")
+                or "Ethernet{0}"
+            )
+            port_segment_size = (
+                n.get("port_segment_size")
+                if n.get("port_segment_size") is not None
+                else catalog_entry.get("port_segment_size", 0)
+            )
 
         label = n.get("label") if isinstance(n.get("label"), dict) else {}
         node_obj: dict = {
@@ -924,7 +1004,10 @@ def convert(
             "z":                 n.get("z", 1),
             "width":             w,
             "height":            h,
-            "symbol":            SYMBOL.get(ntype, ":/symbols/computer.svg"),
+            "symbol":            (
+                APPLIANCE_CATALOG.get(template_name, {}).get("_symbol")
+                or SYMBOL.get(ntype, ":/symbols/computer.svg")
+            ),
             "label": {
                 "text":     n.get("name", nid),
                 "x":        label.get("x", lx),
@@ -935,7 +1018,10 @@ def convert(
             "properties":        _clean_properties(n),
             "port_name_format":  port_name_format,
             "port_segment_size": port_segment_size,
-            "first_port_name":   n.get("first_port_name"),
+            "first_port_name":   (
+                n.get("first_port_name")
+                or APPLIANCE_CATALOG.get(template_name, {}).get("first_port_name")
+            ),
             # "ports":             _build_ports(n, links_in), --> read only you can't write 
         }
 

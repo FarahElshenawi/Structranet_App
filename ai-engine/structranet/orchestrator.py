@@ -10,7 +10,7 @@ Offline export pipeline with interactive pause-and-resume loop:
   [6/6] GNS3 Export & Validation
 
 V4.0 additions over V3.3:
-  1. Interactive Phase 1 Checkpoint Loop (Requirement 3)
+  1. Interactive Phase 1 Checkpoint Loop
        After every Phase 1 generation the pipeline PAUSES and presents
        the AI's chain-of-thought + node/link summary to the user.
        The user can type "c" to continue to Phase 2, or "e" to supply
@@ -18,20 +18,20 @@ V4.0 additions over V3.3:
        Phase 1.  The loop runs until the user approves the design or
        --max-edits is exhausted.
 
-  2. Chain-of-Thought display (Requirement 2)
+  2. Chain-of-Thought display
        The thinking_text returned by generate_network_topology() is
        printed in a clearly delimited box before asking for approval.
 
-  3. Image Verification Manifest (Requirement 1)
+  3. Image Verification Manifest
        generate_image_manifest() is called immediately after
        process_and_save_topology() and writes output/image_manifest.txt.
 
-  4. Rich node context (Requirement 4)
+  4. Rich node context
        _enrich_nodes() is called inside process_and_save_topology()
        (ai_agent.py) so the enriched dict flows into Phase 2 and export
        without any additional wiring here.
 
-  5. Multi-Turn Chat History (Requirement 5)
+  5. Multi-Turn Chat History
        SessionState carries chat_history across Edit loop iterations.
        The accumulated history is passed to generate_network_topology()
        on every call so the LLM refines rather than restarts.
@@ -51,7 +51,6 @@ import os
 import sys
 import time
 from pathlib import Path
-import sys
 from typing import Any, Dict, List, Optional
 
 from structranet.ai.agent import (
@@ -85,14 +84,18 @@ OUTPUT_DIR = os.getenv("STRUCTRANET_OUTPUT_DIR", "output")
 _SEP = "=" * 70
 _SEP_THIN = "-" * 70
 
-def stream_print(text, speed=0.015):
+
+def stream_print(text: str, speed: float = 0.015) -> None:
+    """Print ``text`` character-by-character at ``speed`` seconds per char."""
     for char in text:
         sys.stdout.write(char)
         sys.stdout.flush()
         time.sleep(speed)
     print()
 
+
 def _print_box(title: str, body: str) -> None:
+    """Print a full-width labelled box around ``body``."""
     print(f"\n{_SEP}")
     print(f"  {title}")
     print(_SEP_THIN)
@@ -102,6 +105,7 @@ def _print_box(title: str, body: str) -> None:
 
 
 def _print_thinking(thinking_text: str) -> None:
+    """Display the LLM's chain-of-thought reasoning block."""
     if not thinking_text.strip():
         return
     _print_box("AI CHAIN-OF-THOUGHT (Architectural Reasoning)", thinking_text)
@@ -119,7 +123,6 @@ def _print_topology_summary(topology_dict: Dict[str, Any]) -> None:
         "  " + "-" * 80,
     ]
 
-    # Count links per node
     link_counts: Dict[str, int] = {}
     for link in links:
         for ep in link.get("nodes", []):
@@ -149,7 +152,8 @@ def _print_topology_summary(topology_dict: Dict[str, Any]) -> None:
 
 # ─── CLI Arguments ────────────────────────────────────────────────────────────
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
+    """Parse and return CLI arguments."""
     parser = argparse.ArgumentParser(
         description="Structranet AI — Natural Language to GNS3 Topology"
     )
@@ -170,7 +174,7 @@ def parse_args():
     parser.add_argument("--configs", type=str, default=None, metavar="DIR",
                         help="Export raw configs to DIR for pre-GNS3 review")
     parser.add_argument("--yes", action="store_true",
-                        help="Auto-approve all interactive checkpoints (alias for --auto-continue)")
+                        help="Auto-approve all interactive checkpoints")
     parser.add_argument("--auto-continue", action="store_true",
                         help="Skip interactive checkpoint loop (non-interactive mode)")
     parser.add_argument("--max-edits", type=int, default=5,
@@ -182,14 +186,6 @@ def parse_args():
         help="Apply automated security hardening (default: none)",
     )
     return parser.parse_args()
-
-
-# ─── Catalog → Inventory Adapter ─────────────────────────────────────────────
-
-
-
-
-# ─── Design Review helper ─────────────────────────────────────────────────────
 
 
 # ─── Interactive Phase 1 Checkpoint Loop ──────────────────────────────────────
@@ -207,21 +203,18 @@ def _checkpoint_loop(
 ) -> Optional[GNS3Project]:
     """Run Phase 1 in a pause-and-resume loop.
 
-    The loop:
-      1. Calls generate_network_topology() (with accumulated chat history).
-      2. Displays the chain-of-thought and the draft topology table.
-      3. Pauses and asks: Continue / Edit.
-      4a. Continue → process_and_save_topology(), generate manifest, return.
+    Steps per iteration:
+      1. Call ``generate_network_topology`` with accumulated chat history.
+      2. Display the chain-of-thought and draft topology table.
+      3. Pause and prompt: Continue / Edit / Quit.
+      4a. Continue → ``process_and_save_topology``, generate manifest, return.
       4b. Edit     → capture feedback, append to history, loop.
 
-    Returns the enriched GNS3Project on approval, or None on failure.
+    Returns the enriched ``GNS3Project`` on user approval, or ``None`` on
+    failure or user abort.
     """
     for edit_num in range(max_edits + 1):
-        if edit_num == 0:
-            current_request = user_request
-        else:
-            # edit feedback was already appended to state.chat_history
-            current_request = user_request  # the original request is anchor
+        current_request = user_request  # original request is the anchor
 
         print(f"\n{'─'*70}")
         if edit_num == 0:
@@ -237,7 +230,6 @@ def _checkpoint_loop(
             chat_history=state.chat_history,
         )
 
-        # Always persist the updated history
         state.chat_history = updated_history
         state.thinking_text = thinking_text
         state.iteration = edit_num + 1
@@ -257,14 +249,11 @@ def _checkpoint_loop(
             f"{len(result.topology.links)} link(s)"
         )
 
-        # ── Display chain-of-thought ─────────────────────────────────────────
         _print_thinking(thinking_text)
 
-        # Convert to dict for display (pre-hardware-injection)
         raw_dict = result.model_dump()
         _print_topology_summary(raw_dict)
 
-        # ── Checkpoint pause ─────────────────────────────────────────────────
         if auto_continue:
             print("  [auto-continue] Proceeding without interactive checkpoint.")
             decision = "c"
@@ -290,8 +279,6 @@ def _checkpoint_loop(
                     "\n  Describe your changes (be specific about nodes/links/topology):\n  > "
                 ).strip()
                 if feedback:
-                    # Append user feedback as a new user turn so the LLM sees it
-                    # as a continuation of the existing conversation
                     state.chat_history.append({
                         "role": "user",
                         "content": (
@@ -304,7 +291,7 @@ def _checkpoint_loop(
                 else:
                     print("  No feedback entered — treating as Continue.")
 
-        # ── Approved: inject hardware + enrich + patch ───────────────────────
+        # Approved: inject hardware + enrich + patch
         print("\n[4/6] Phase 1 — Injecting hardware, enriching nodes, patching VLANs...")
         enriched = process_and_save_topology(result, phase1_file)
         if enriched is None:
@@ -325,7 +312,6 @@ def _checkpoint_loop(
         print(f"  Hardware-injected topology saved to: {phase1_file}")
         state.topology_dict = enriched.model_dump()
 
-        # ── Image manifest ────────────────────────────────────────────────────
         print("  Generating image verification manifest...")
         manifest_path = generate_image_manifest(
             state.topology_dict,
@@ -351,8 +337,11 @@ def _print_image_manifest_summary(
     topology_dict: Dict[str, Any],
     template_image_map: Dict[str, str],
 ) -> None:
-    """Print a compact image readiness summary inline (full file written separately)."""
-    from structranet.ai.agent import _APPLIANCE_NODE_TYPES, _BUILTIN_NODE_TYPES  # noqa: PLC0415  # noqa: PLC0415
+    """Print a compact image-readiness summary inline.
+
+    The full manifest file is written separately by ``generate_image_manifest``.
+    """
+    from structranet.ai.agent import _APPLIANCE_NODE_TYPES  # noqa: PLC0415
 
     topo = topology_dict.get("topology", {})
     nodes = topo.get("nodes", [])
@@ -373,7 +362,8 @@ def _print_image_manifest_summary(
 
 # ─── Main Pipeline ────────────────────────────────────────────────────────────
 
-def main():
+def main() -> None:
+    """Entry point for the CLI offline export pipeline."""
     args = parse_args()
     logging.basicConfig(
         level=logging.INFO, format="%(name)s [%(levelname)s] %(message)s"
@@ -388,7 +378,7 @@ def main():
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # ── [1/6] Load catalog ───────────────────────────────────────────────────
+    # [1/6] Load catalog
     print("[1/6] Loading appliance catalog...")
     catalog = load_catalog(args.catalog)
     inventory = catalog_to_inventory(catalog)
@@ -400,7 +390,7 @@ def main():
         f"{', '.join(d['name'] for d in inventory)}"
     )
 
-    # ── [2/6] User input + Preflight ─────────────────────────────────────────
+    # [2/6] User input + Preflight
     print(f"\n[2/6] Describe the network you want.")
     print(f"  Available: {', '.join(d['name'] for d in inventory)}")
     if args.request:
@@ -442,7 +432,7 @@ def main():
             f"{', '.join(sorted(blocked_types))}"
         )
 
-    # ── [3+4/6] Interactive Phase 1 Checkpoint Loop ──────────────────────────
+    # [3+4/6] Interactive Phase 1 Checkpoint Loop
     phase1_file = os.path.join(OUTPUT_DIR, "_topology.json")
     manifest_file = os.path.join(OUTPUT_DIR, "image_manifest.txt")
     state = SessionState(last_request=user_request)
@@ -465,7 +455,7 @@ def main():
 
     topo_dict = enriched.model_dump()
 
-    # ── Compatibility + design review ─────────────────────────────────────────
+    # Compatibility + design review
     compatibility_issues = check_topology_compatibility(topo_dict, profile)
     if compatibility_issues:
         print("\n[Compatibility] Found environment issues:")
@@ -486,7 +476,7 @@ def main():
     for a in assumptions:
         stream_print(f"    * {a}", speed=0.015)
 
-    # ── [5/6] Phase 2 — Software configuration ───────────────────────────────
+    # [5/6] Phase 2 — Software configuration
     final_file = args.output or os.path.join(OUTPUT_DIR, "final_topology.json")
 
     if args.no_phase2:
@@ -538,16 +528,14 @@ def main():
             print("Stopped before export at your request.")
             sys.exit(0)
 
-    # ── [6/6] Export + Validate ───────────────────────────────────────────────
+    # [6/6] Export + Validate
     print("\n[6/6] Exporting portable GNS3 project (.gns3project)...")
     project_output = args.project_output
     if not project_output:
         final_stem = Path(final_file).stem
         project_output = os.path.join(OUTPUT_DIR, f"{final_stem}.gns3project")
 
-    config_review_dir = args.configs
-    if config_review_dir is None:
-        config_review_dir = os.path.join(OUTPUT_DIR, "configs_review")
+    config_review_dir = args.configs or os.path.join(OUTPUT_DIR, "configs_review")
 
     try:
         project_path = export_gns3project(
@@ -573,7 +561,7 @@ def main():
         else:
             print("[ERR] Validator result: FAIL (see issues above)")
 
-    # ── Generation report ─────────────────────────────────────────────────────
+    # Generation report
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "request": user_request,

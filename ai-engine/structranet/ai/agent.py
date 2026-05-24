@@ -837,87 +837,248 @@ def _enrich_nodes(topology_dict: Dict[str, Any]) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Image Verification Manifest  (Requirement 1)
+#  Image Verification Manifest — "Shopping List"  (Deterministic, no LLM)
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# Image key per node_type — used by _resolve_all_images to look up the
+# correct property name in the appliance catalog entry.
+_IMAGE_KEY_MAP: Dict[str, List[str]] = {
+    "dynamips":   ["image"],
+    "iou":        ["path"],
+    "qemu":       ["hda_disk_image", "hdb_disk_image", "hdc_disk_image", "hdd_disk_image"],
+    "docker":     ["image"],
+    "virtualbox": ["hda_disk_image", "hdb_disk_image", "hdc_disk_image", "hdd_disk_image"],
+    "vmware":     ["hda_disk_image", "hdb_disk_image", "hdc_disk_image", "hdd_disk_image"],
+}
+
+
+def _resolve_all_images(
+    template: str,
+    node_type: str,
+    template_image_map: Dict[str, str],
+    appliance_catalog: Dict[str, Any],
+) -> Tuple[List[Tuple[str, bool]], bool]:
+    """Resolve every required image for a template.
+
+    Returns
+    -------
+    (images, is_available)
+        images : list of (filename, is_from_catalog_default)
+            For each disk image the appliance needs.  The first tuple is
+            always the primary (boot) image; subsequent ones are additional
+            disks (hdb, hdc, ...) when the appliance is multi-disk.
+        is_available : bool
+            True when the template exists in the user's template_image_map
+            (i.e. the user has explicitly mapped this template to an image
+            in their profile).
+
+    Notes
+    -----
+    - When the template IS in template_image_map, the primary image comes
+      from the user's map and is_available=True.  Additional disk images
+      are still pulled from the catalog because template_image_map is a
+      single-key -> single-value mapping and cannot express multi-disk.
+    - When the template is NOT in template_image_map, ALL images come
+      from the appliance catalog (with is_from_catalog_default=True) and
+      is_available=False.
+    - If the template is not in the catalog either, images will be empty
+      and is_available=False.
+    """
+    result: List[Tuple[str, bool]] = []
+    is_available = template in template_image_map
+
+    # -- Primary image from user map (highest priority) --------------------
+    user_image = template_image_map.get(template)
+    if user_image:
+        result.append((user_image, False))  # False = not a catalog default
+
+    # -- Gather images from the appliance catalog -------------------------
+    catalog_entry = appliance_catalog.get(template, {})
+    if not catalog_entry:
+        # Nothing in the catalog -- return whatever we have
+        return result, is_available
+
+    # Pick the right keys based on node_type
+    disk_keys = _IMAGE_KEY_MAP.get(node_type, ["image", "hda_disk_image", "path"])
+
+    if user_image:
+        # User already supplied the primary image via template_image_map.
+        # Still gather additional disk images (hdb, hdc, ...) from the
+        # catalog so the checklist warns about multi-disk requirements.
+        additional_keys = [k for k in disk_keys if k != disk_keys[0]]
+        for key in additional_keys:
+            img = catalog_entry.get(key)
+            if img:
+                result.append((img, True))  # True = catalog default
+    else:
+        # No user mapping -- all images come from the catalog.
+        for key in disk_keys:
+            img = catalog_entry.get(key)
+            if img:
+                result.append((img, True))
+
+    return result, is_available
+
 
 def generate_image_manifest(
     topology_dict: Dict[str, Any],
     template_image_map: Dict[str, str],
     output_path: str,
+    appliance_catalog: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Write image_manifest.txt cross-referencing each node against the image map.
+    """Write a user-friendly "Shopping List" checklist of required images.
+
+    This function is **purely deterministic** -- no LLM calls.  It iterates
+    through the nodes in the topology, checks image availability against
+    the user's template_image_map, and falls back to the global
+    appliance_catalog to find the default required image filename for
+    templates that are not in the user's map.
 
     Parameters
     ----------
-    topology_dict       Hardware-injected topology dict.
-    template_image_map  Mapping from template_name to IOS image filename.
-    output_path         Destination file path for image_manifest.txt.
+    topology_dict       Hardware-injected topology dict (Phase 1 output).
+    template_image_map  Mapping from template_name to IOS/image filename
+                        provided by the user in their preflight profile.
+    output_path         Destination file path for the checklist .txt file.
+    appliance_catalog   Global appliance catalog (keyed by template_name)
+                        used to resolve default image filenames when a
+                        template is missing from template_image_map.
+                        If ``None``, the built-in APPLIANCE_CATALOG is used.
 
     Returns
     -------
     Absolute path of the written manifest file.
     """
+    if appliance_catalog is None:
+        from structranet.constants.appliances import APPLIANCE_CATALOG  # noqa: PLC0415
+        appliance_catalog = APPLIANCE_CATALOG
+
     topo = topology_dict.get("topology", {})
     nodes = topo.get("nodes", [])
 
+    # -- Header -----------------------------------------------------------
+    separator = "=" * 48
     lines: List[str] = [
-        "=" * 70,
-        "  STRUCTRANET AI — IMAGE VERIFICATION MANIFEST",
-        "=" * 70,
+        separator,
+        "  StructuraNet - Required Images Checklist",
+        separator,
         "",
-        f"  Nodes: {len(nodes)}",
-        f"  Images in map: {len(template_image_map)}",
-        "",
-        f"  {'Node ID':<12} {'Name':<20} {'Template':<25} Status / Image File",
-        "  " + "-" * 66,
     ]
 
-    missing: List[str] = []
+    ok_count = 0
+    missing_count = 0
+    builtin_count = 0
+    counter = 0
 
     for node in nodes:
+        counter += 1
         nid = node.get("node_id", "?")
         name = node.get("name", "?")
         ntype = node.get("node_type", "")
         template = node.get("template_name", "")
 
+        # -- Built-in nodes (no image required) ---------------------------
         if ntype in _BUILTIN_NODE_TYPES:
-            status = "Built-in — no image required"
-        elif ntype in _APPLIANCE_NODE_TYPES:
-            if template in template_image_map:
-                image_file = template_image_map[template]
-                status = f"{image_file}"
+            builtin_count += 1
+            lines.append(f"{counter}. Device: {name} (Template: {template})")
+            lines.append("   Required Image: None required (Built-in GNS3 node)")
+            lines.append("   Status: [OK]")
+            lines.append("")
+            continue
+
+        # -- Appliance nodes (dynamips / iou / qemu / docker / vbox / vmware)
+        if ntype in _APPLIANCE_NODE_TYPES:
+            images, is_available = _resolve_all_images(
+                template, ntype, template_image_map, appliance_catalog,
+            )
+
+            if not images:
+                # Neither user map nor catalog has an image for this template
+                missing_count += 1
+                lines.append(f"{counter}. Device: {name} (Template: {template})")
+                lines.append(
+                    "   Required Image: Unknown -- not found in your profile or catalog"
+                )
+                lines.append(
+                    "   Status: [MISSING] -- Cannot determine required image. "
+                    "Add it to your profile or appliance catalog."
+                )
+                lines.append("")
+                continue
+
+            if is_available:
+                ok_count += 1
+                lines.append(f"{counter}. Device: {name} (Template: {template})")
+
+                # Primary image (from user's map -- no "(Default)" suffix)
+                primary_img, _ = images[0]
+                lines.append(f"   Required Image: {primary_img}")
+
+                # Additional disks (from catalog -- marked "(Default)")
+                for img_name, is_default in images[1:]:
+                    suffix = " (Default)" if is_default else ""
+                    lines.append(f"   Additional Disk: {img_name}{suffix}")
+
+                lines.append("   Status: [OK] - Available in your profile.")
             else:
-                status = "NOT IN IMAGE MAP — verify manually"
-                missing.append(f"  {nid} / {template}")
-        else:
-            status = "Unknown type"
+                missing_count += 1
+                lines.append(f"{counter}. Device: {name} (Template: {template})")
 
-        lines.append(f"  {nid:<12} {name:<20} {template:<25} {status}")
+                # All images from catalog -- marked "(Default)"
+                for i, (img_name, is_default) in enumerate(images):
+                    suffix = " (Default)" if is_default else ""
+                    if i == 0:
+                        lines.append(f"   Required Image: {img_name}{suffix}")
+                    else:
+                        lines.append(f"   Additional Disk: {img_name}{suffix}")
 
-    lines.append("")
+                lines.append(
+                    "   Status: [MISSING] - Please download this image "
+                    "and import it into GNS3."
+                )
 
-    if missing:
-        lines += [
-            "  MISSING IMAGE MAPPINGS (add to preflight profile or catalog):",
-            *[f"    {m}" for m in missing],
-            "",
-        ]
+            lines.append("")
+            continue
+
+        # -- Unknown node types -------------------------------------------
+        lines.append(f"{counter}. Device: {name} (Template: {template})")
+        lines.append(f"   Required Image: Unknown node type '{ntype}'")
+        lines.append("   Status: [UNKNOWN]")
+        lines.append("")
+
+    # -- Footer / summary -------------------------------------------------
+    lines.append(separator)
+    lines.append(
+        f"  Summary: {ok_count} Available | {missing_count} Missing | "
+        f"{builtin_count} Built-in | {len(nodes)} Total"
+    )
+    if missing_count > 0:
+        lines.append("")
+        lines.append(
+            "  Action required: Download the [MISSING] images above and "
+            "import them into"
+        )
+        lines.append(
+            "  your GNS3 server before importing the .gns3project file."
+        )
     else:
-        lines.append("  All appliance nodes have image mappings.")
+        lines.append("")
+        lines.append(
+            "  All required images are available. You can import the "
+            ".gns3project file."
+        )
+    lines.append(separator)
 
-    lines += [
-        "",
-        "  Action: verify each image file exists in your GNS3 images directory",
-        "  before importing the .gns3project.",
-        "=" * 70,
-    ]
-
+    # -- Write to disk ----------------------------------------------------
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     abs_path = str(out.resolve())
-    logger.info("Image manifest written to %s", abs_path)
+    logger.info(
+        "Image checklist written to %s (%d ok, %d missing, %d builtin)",
+        abs_path, ok_count, missing_count, builtin_count,
+    )
     return abs_path
 
 

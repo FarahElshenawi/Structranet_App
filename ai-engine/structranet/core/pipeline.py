@@ -314,6 +314,7 @@ async def run_phase1(
         session.topology_dict,
         session.profile.normalized_template_image_map,
         manifest_file,
+        session.catalog,
     )
 
     session.topology_data = build_topology_data(session.topology_dict)

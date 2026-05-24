@@ -410,41 +410,34 @@ async def download_configs_zip(session_id: str):
 
 
 @app.get("/sessions/{session_id}/download/requirements")
-async def download_requirements_json(session_id: str):
-    """Download appliance requirements as a JSON file.
+async def download_requirements_txt(session_id: str):
+    """Download the Required Images Checklist as a .txt file.
 
-    Uses technical appliance names as keys (e.g. "vpc", "c7200",
-    "ethernet_switch"). Values are the IOS image filename if required,
-    or an empty string if no image is needed.
+    The file is generated deterministically by ``generate_image_manifest``
+    during Phase 1 and saved to the session's output directory as
+    ``image_manifest.txt``.  This endpoint serves that file for download
+    with a user-friendly filename based on the project name.
+
+    The checklist shows, for every node in the topology:
+      - [OK]       — image available in the user's profile, or built-in
+      - [MISSING]  — image not in profile; default filename from catalog
+      - [UNKNOWN]  — unrecognised node type
     """
     session = await _get_session(session_id)
-    if not session.requirements:
-        raise HTTPException(404, "No requirements available yet")
 
-    # Build the simplified requirements dict:
-    # {appliance_type: count, ...} with image info
-    req_data = {}
-    for req in session.requirements:
-        template = req.template_name
-        # Use the technical template name as the key
-        if template not in req_data:
-            req_data[template] = {
-                "count": 0,
-                "image_file": req.image_file or "",
-                "image_required": req.image_required,
-                "category": req.category,
-                "node_type": req.node_type,
-            }
-        req_data[template]["count"] += 1
+    manifest_path = Path(session.output_dir) / "image_manifest.txt"
+    if not manifest_path.exists():
+        raise HTTPException(
+            404,
+            "Requirements checklist not generated yet. "
+            "Generate a topology first.",
+        )
 
     project_name = session.project_name or session.session_id
-    json_bytes = json.dumps(req_data, indent=2).encode("utf-8")
-    return StreamingResponse(
-        io.BytesIO(json_bytes),
-        media_type="application/json",
-        headers={
-            "Content-Disposition": f'attachment; filename="{project_name}_requirements.json"',
-        },
+    return FileResponse(
+        path=str(manifest_path),
+        media_type="text/plain; charset=utf-8",
+        filename=f"{project_name}_requirements.txt",
     )
 
 

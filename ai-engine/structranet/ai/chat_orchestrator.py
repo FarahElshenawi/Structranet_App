@@ -200,7 +200,7 @@ async def _call_llm(
     """Call the LLM with messages + tool definitions. Returns the raw response."""
     client = _get_client()
 
-    model = "google/gemini-2.0-flash-001"
+    model = "openai/gpt-oss-120b:free"
 
     def _api_call():
         return client.chat.completions.create(

@@ -4,10 +4,8 @@ const PRIMARY = "#166534";
 const PRIMARY_HOVER = "#14532D";
 const BG = "#F9FAFB";
 const BORDER = "#E5E7EB";
-const MUTED = "#F3F4F6";
 
-/* ── Feature card data ─────────────────────────────────────────────────── */
-
+/* ── 8 Feature cards per walkthrough spec ──────────────────────────── */
 const FEATURES = [
   {
     icon: PATHS.sparkles,
@@ -16,62 +14,76 @@ const FEATURES = [
   },
   {
     icon: PATHS.shield,
+    title: "Security-First Design",
+    desc: "Security scope is established before topology generation. Firewalls, DMZ segments, and zone-based policies are built into the physical structure.",
+  },
+  {
+    icon: PATHS.search,
     title: "Smart Appliance Matching",
     desc: "Automatically matches your installed GNS3 images to the right devices. Know exactly what you need before importing.",
   },
   {
     icon: PATHS.download,
     title: "One-Click Export",
-    desc: "Download a ready-to-import .gns3project file, device configurations, and a requirements manifest -- all in one click.",
+    desc: "Download a ready-to-import .gns3project file, device configurations, and a requirements manifest — all in one click.",
   },
   {
     icon: PATHS.pencil,
-    title: "Interactive Editing",
+    title: "Conversational Editing",
     desc: "Review the generated topology, request changes in natural language, and iterate until it matches your exact requirements.",
+  },
+  {
+    icon: PATHS.copy,
+    title: "Digital Twin Mode",
+    desc: "Describe an existing network and the AI reconstructs it as a baseline, then applies your requested changes as a delta.",
+  },
+  {
+    icon: PATHS.hardDrive,
+    title: "Ansible Automation",
+    desc: "Auto-generates Ansible playbooks, inventory files, and config templates alongside your GNS3 project for real-world deployment.",
   },
   {
     icon: PATHS.settings,
     title: "Device Configuration",
-    desc: "Auto-generates startup configurations for every device -- VLANs, routing protocols, firewall rules, and interface addressing.",
-  },
-  {
-    icon: PATHS.cpu,
-    title: "Environment Profiles",
-    desc: "Configure your GNS3 environment once. We match every topology to your installed appliances and available images.",
+    desc: "Auto-generates startup configurations for every device — VLANs, routing protocols, firewall rules, and interface addressing.",
   },
 ];
 
+/* ── 4 Steps per walkthrough spec ──────────────────────────────────── */
 const STEPS = [
   {
     num: 1,
     title: "Describe",
-    desc: 'Write what you need in plain English. "Campus network with 3 VLANs, a core router, and a perimeter firewall."',
+    desc: "Write what you need in plain English. AI determines security scope automatically.",
   },
   {
     num: 2,
-    title: "Review",
-    desc: "Examine the generated topology diagram, review AI reasoning, and edit or approve the design.",
+    title: "Design",
+    desc: "AI generates a security-aware topology with firewall, DMZ, and zone separation if needed.",
   },
   {
     num: 3,
+    title: "Review",
+    desc: "Examine the topology, edit or approve the design, and request changes in natural language.",
+  },
+  {
+    num: 4,
     title: "Export",
-    desc: "Download the .gns3project file, device configurations, and appliance requirements manifest.",
+    desc: "Download the .gns3project file, device configurations, and Ansible automation files.",
   },
 ];
-
-/* ── Component ─────────────────────────────────────────────────────────── */
 
 export default function LandingPage({ onLogin, onSignup }) {
   return (
     <div
       style={{
-        fontFamily: "'Inter', system-ui, sans-serif",
+        fontFamily: "'Geist', 'Inter', system-ui, sans-serif",
         background: "#fff",
         color: "#111",
         minHeight: "100vh",
       }}
     >
-      {/* ── NAV ─────────────────────────────────────────────────────────── */}
+      {/* ── NAV ─────────────────────────────────────────────────────── */}
       <nav
         style={{
           position: "fixed",
@@ -110,44 +122,14 @@ export default function LandingPage({ onLogin, onSignup }) {
           </span>
         </div>
 
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 32,
-          }}
-        >
-          <a
-            href="#features"
-            style={{
-              fontSize: 14,
-              color: "#6B7280",
-              textDecoration: "none",
-              fontWeight: 500,
-            }}
-          >
+        <div style={{ display: "flex", alignItems: "center", gap: 32 }}>
+          <a href="#features" style={{ fontSize: 14, color: "#6B7280", textDecoration: "none", fontWeight: 500 }}>
             Features
           </a>
-          <a
-            href="#how-it-works"
-            style={{
-              fontSize: 14,
-              color: "#6B7280",
-              textDecoration: "none",
-              fontWeight: 500,
-            }}
-          >
+          <a href="#how-it-works" style={{ fontSize: 14, color: "#6B7280", textDecoration: "none", fontWeight: 500 }}>
             How It Works
           </a>
-          <a
-            href="#"
-            style={{
-              fontSize: 14,
-              color: "#6B7280",
-              textDecoration: "none",
-              fontWeight: 500,
-            }}
-          >
+          <a href="#" style={{ fontSize: 14, color: "#6B7280", textDecoration: "none", fontWeight: 500 }}>
             Documentation
           </a>
         </div>
@@ -186,7 +168,7 @@ export default function LandingPage({ onLogin, onSignup }) {
         </div>
       </nav>
 
-      {/* ── HERO ────────────────────────────────────────────────────────── */}
+      {/* ── HERO ────────────────────────────────────────────────────── */}
       <section
         style={{
           minHeight: "100vh",
@@ -200,7 +182,6 @@ export default function LandingPage({ onLogin, onSignup }) {
           overflow: "hidden",
         }}
       >
-        {/* Radial glow background */}
         <div
           style={{
             position: "absolute",
@@ -210,8 +191,7 @@ export default function LandingPage({ onLogin, onSignup }) {
             width: 800,
             height: 800,
             borderRadius: "50%",
-            background:
-              "radial-gradient(circle, rgba(22,101,52,0.06) 0%, transparent 70%)",
+            background: "radial-gradient(circle, rgba(22,101,52,0.06) 0%, transparent 70%)",
             pointerEvents: "none",
           }}
         />
@@ -268,7 +248,7 @@ export default function LandingPage({ onLogin, onSignup }) {
           }}
         >
           Describe your network in plain English and get a fully configured,
-          export-ready GNS3 project -- complete with device configs and
+          export-ready GNS3 project — complete with device configs and
           appliance requirements.
         </p>
 
@@ -289,8 +269,7 @@ export default function LandingPage({ onLogin, onSignup }) {
             onMouseOver={(e) => {
               e.currentTarget.style.background = PRIMARY_HOVER;
               e.currentTarget.style.transform = "translateY(-1px)";
-              e.currentTarget.style.boxShadow =
-                "0 4px 12px rgba(22,101,52,0.25)";
+              e.currentTarget.style.boxShadow = "0 4px 12px rgba(22,101,52,0.25)";
             }}
             onMouseOut={(e) => {
               e.currentTarget.style.background = PRIMARY;
@@ -321,31 +300,13 @@ export default function LandingPage({ onLogin, onSignup }) {
         </div>
       </section>
 
-      {/* ── FEATURES ────────────────────────────────────────────────────── */}
-      <section
-        id="features"
-        style={{ padding: "100px 48px", background: BG }}
-      >
+      {/* ── FEATURES ────────────────────────────────────────────────── */}
+      <section id="features" style={{ padding: "100px 48px", background: BG }}>
         <div style={{ textAlign: "center", marginBottom: 64 }}>
-          <h2
-            style={{
-              fontSize: 36,
-              fontWeight: 800,
-              letterSpacing: "-0.02em",
-              marginBottom: 16,
-            }}
-          >
+          <h2 style={{ fontSize: 36, fontWeight: 800, letterSpacing: "-0.02em", marginBottom: 16 }}>
             From description to deployment
           </h2>
-          <p
-            style={{
-              fontSize: 16,
-              color: "#6B7280",
-              maxWidth: 480,
-              margin: "0 auto",
-              lineHeight: 1.6,
-            }}
-          >
+          <p style={{ fontSize: 16, color: "#6B7280", maxWidth: 480, margin: "0 auto", lineHeight: 1.6 }}>
             Everything you need to go from an idea to a working GNS3 topology
             in seconds.
           </p>
@@ -372,8 +333,7 @@ export default function LandingPage({ onLogin, onSignup }) {
               }}
               onMouseOver={(e) => {
                 e.currentTarget.style.borderColor = "#BBF7D0";
-                e.currentTarget.style.boxShadow =
-                  "0 4px 16px rgba(22,101,52,0.08)";
+                e.currentTarget.style.boxShadow = "0 4px 16px rgba(22,101,52,0.08)";
               }}
               onMouseOut={(e) => {
                 e.currentTarget.style.borderColor = BORDER;
@@ -395,66 +355,27 @@ export default function LandingPage({ onLogin, onSignup }) {
               >
                 <Icon d={f.icon} size={22} />
               </div>
-              <h3
-                style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}
-              >
-                {f.title}
-              </h3>
-              <p
-                style={{
-                  fontSize: 14,
-                  color: "#6B7280",
-                  lineHeight: 1.6,
-                }}
-              >
-                {f.desc}
-              </p>
+              <h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}>{f.title}</h3>
+              <p style={{ fontSize: 14, color: "#6B7280", lineHeight: 1.6 }}>{f.desc}</p>
             </div>
           ))}
         </div>
       </section>
 
-      {/* ── HOW IT WORKS ────────────────────────────────────────────────── */}
+      {/* ── HOW IT WORKS — 4 steps ──────────────────────────────────── */}
       <section id="how-it-works" style={{ padding: "100px 48px" }}>
         <div style={{ textAlign: "center", marginBottom: 64 }}>
-          <h2
-            style={{
-              fontSize: 36,
-              fontWeight: 800,
-              letterSpacing: "-0.02em",
-              marginBottom: 16,
-            }}
-          >
+          <h2 style={{ fontSize: 36, fontWeight: 800, letterSpacing: "-0.02em", marginBottom: 16 }}>
             How it works
           </h2>
-          <p
-            style={{
-              fontSize: 16,
-              color: "#6B7280",
-              maxWidth: 480,
-              margin: "0 auto",
-            }}
-          >
-            Three steps from idea to a fully configured GNS3 project.
+          <p style={{ fontSize: 16, color: "#6B7280", maxWidth: 480, margin: "0 auto" }}>
+            Four steps from idea to a fully configured GNS3 project.
           </p>
         </div>
 
-        <div
-          style={{
-            display: "flex",
-            gap: 48,
-            maxWidth: 1000,
-            margin: "0 auto",
-          }}
-        >
+        <div style={{ display: "flex", gap: 48, maxWidth: 1000, margin: "0 auto" }}>
           {STEPS.map((s) => (
-            <div
-              key={s.num}
-              style={{
-                flex: 1,
-                textAlign: "center",
-              }}
-            >
+            <div key={s.num} style={{ flex: 1, textAlign: "center" }}>
               <div
                 style={{
                   width: 40,
@@ -472,56 +393,19 @@ export default function LandingPage({ onLogin, onSignup }) {
               >
                 {s.num}
               </div>
-              <h3
-                style={{
-                  fontSize: 16,
-                  fontWeight: 700,
-                  marginBottom: 8,
-                }}
-              >
-                {s.title}
-              </h3>
-              <p
-                style={{
-                  fontSize: 14,
-                  color: "#6B7280",
-                  lineHeight: 1.5,
-                }}
-              >
-                {s.desc}
-              </p>
+              <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>{s.title}</h3>
+              <p style={{ fontSize: 14, color: "#6B7280", lineHeight: 1.5 }}>{s.desc}</p>
             </div>
           ))}
         </div>
       </section>
 
-      {/* ── CTA ─────────────────────────────────────────────────────────── */}
-      <section
-        style={{
-          padding: "100px 48px",
-          background: PRIMARY,
-          textAlign: "center",
-        }}
-      >
-        <h2
-          style={{
-            fontSize: 36,
-            fontWeight: 800,
-            color: "white",
-            marginBottom: 16,
-          }}
-        >
+      {/* ── CTA ─────────────────────────────────────────────────────── */}
+      <section style={{ padding: "100px 48px", background: PRIMARY, textAlign: "center" }}>
+        <h2 style={{ fontSize: 36, fontWeight: 800, color: "white", marginBottom: 16 }}>
           Start designing networks today
         </h2>
-        <p
-          style={{
-            fontSize: 16,
-            color: "rgba(255,255,255,0.7)",
-            maxWidth: 440,
-            margin: "0 auto 32px",
-            lineHeight: 1.6,
-          }}
-        >
+        <p style={{ fontSize: 16, color: "rgba(255,255,255,0.7)", maxWidth: 440, margin: "0 auto 32px", lineHeight: 1.6 }}>
           No more manual topology building. Describe your network and let AI
           do the heavy lifting.
         </p>
@@ -551,7 +435,7 @@ export default function LandingPage({ onLogin, onSignup }) {
         </button>
       </section>
 
-      {/* ── FOOTER ──────────────────────────────────────────────────────── */}
+      {/* ── FOOTER ──────────────────────────────────────────────────── */}
       <footer
         style={{
           padding: "32px 48px",
@@ -562,25 +446,23 @@ export default function LandingPage({ onLogin, onSignup }) {
         }}
       >
         <p style={{ fontSize: 13, color: "#9CA3AF" }}>
-          StructuraNet AI -- AI-Powered GNS3 Topology Generator
+          StructuraNet AI — AI-Powered GNS3 Topology Generator
         </p>
         <div style={{ display: "flex", gap: 24 }}>
-          <a
-            href="https://github.com/FarahElshenawi/Structranet_App"
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ fontSize: 13, color: "#6B7280", textDecoration: "none" }}
-          >
-            GitHub
-          </a>
+          <a href="#" style={{ fontSize: 13, color: "#6B7280", textDecoration: "none" }}>Documentation</a>
+          <a href="https://github.com/FarahElshenawi/Structranet_App" target="_blank" rel="noopener noreferrer" style={{ fontSize: 13, color: "#6B7280", textDecoration: "none" }}>GitHub</a>
+          <a href="#" style={{ fontSize: 13, color: "#6B7280", textDecoration: "none" }}>Contact</a>
         </div>
       </footer>
 
-      {/* Global animation keyframes */}
       <style>{`
         @keyframes pulse {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.4; }
+        }
+        @media (max-width: 768px) {
+          #features > div > div { grid-template-columns: 1fr !important; }
+          #how-it-works > div:last-child { flex-direction: column; gap: 32px !important; }
         }
       `}</style>
     </div>

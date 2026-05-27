@@ -1,135 +1,161 @@
-const BORDER  = "rgba(255,255,255,0.07)";
-const SURFACE = "#111";
+import { useState, useMemo } from "react";
 
-const STATUS_CFG = {
-  ok:      { color: "#10B981", label: "Installed",  icon: "✓" },
-  builtin: { color: "#6B7280", label: "Built-in",   icon: "○" },
-  missing: { color: "#EF4444", label: "Missing",    icon: "✗" },
-};
+const G = "#166534";
+const BD = "#E5E7EB";
+const MT = "#F3F4F6";
 
-const CAT_COLOR = {
-  dynamips: "#3B82F6",
-  iou:      "#3B82F6",
-  qemu:     "#8B5CF6",
-  docker:   "#8B5CF6",
-  builtin:  "#6B7280",
-};
-
+/**
+ * RequirementsPanel — Appliance requirements with status dots, image filenames.
+ * Walkthrough spec: white card, each device shows status dot + template name + count + category,
+ * image filename in green monospace box or red "Image not configured" box.
+ */
 export default function RequirementsPanel({ requirements = [] }) {
   if (!requirements.length) return null;
 
-  const missingCount = requirements.filter((r) => r.status === "missing").length;
+  const missing = requirements.filter((r) => r.status === "missing").length;
+  const totalDevices = requirements.reduce((sum, r) => sum + (r.count || 1), 0);
+
+  // Group by template_name
+  const grouped = useMemo(() => {
+    const map = {};
+    for (const r of requirements) {
+      const key = r.name || r.template_name || "Unknown";
+      if (!map[key]) {
+        map[key] = { ...r, count: 0, nodeNames: [] };
+      }
+      map[key].count += (r.count || 1);
+      if (r.node_id) map[key].nodeNames.push(r.node_id);
+    }
+    return Object.values(map);
+  }, [requirements]);
 
   return (
     <div style={{
-      fontFamily: "'Inter', system-ui, sans-serif",
-      background: "#0D0D0D",
-      border: `1px solid ${BORDER}`,
+      border: `1px solid ${BD}`,
       borderRadius: 10,
       overflow: "hidden",
+      marginBottom: 12,
+      background: "white",
+      fontFamily: "'Geist', 'Inter', system-ui, sans-serif",
     }}>
       {/* Header */}
       <div style={{
-        padding: "11px 16px",
-        borderBottom: `1px solid ${BORDER}`,
-        display: "flex", alignItems: "center", gap: 10,
-        background: SURFACE,
+        padding: "10px 14px",
+        borderBottom: `1px solid ${BD}`,
+        background: "#FAFAFA",
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
       }}>
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2" strokeLinecap="round">
-          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-        </svg>
-        <span style={{ fontSize: 12.5, fontWeight: 600, color: "rgba(255,255,255,0.8)" }}>
-          Requirements Manifest
+        <span style={{ fontSize: 13 }}>📦</span>
+        <span style={{ fontSize: 12, fontWeight: 600, color: "#111" }}>
+          Appliance Requirements
+        </span>
+        <span style={{ fontSize: 12, color: "#6B7280" }}>
+          — {totalDevices} devices
         </span>
         <span style={{
           marginLeft: "auto",
-          fontSize: 10, fontFamily: "monospace",
-          color: missingCount > 0 ? "#EF4444" : "#10B981",
-          background: missingCount > 0 ? "rgba(239,68,68,0.1)" : "rgba(16,185,129,0.1)",
-          border: `1px solid ${missingCount > 0 ? "rgba(239,68,68,0.2)" : "rgba(16,185,129,0.2)"}`,
-          padding: "2px 8px", borderRadius: 4,
+          fontSize: 10,
+          fontFamily: "monospace",
+          color: missing > 0 ? "#DC2626" : G,
+          background: missing > 0 ? "#FEF2F2" : "#F0FDF4",
+          border: `1px solid ${missing > 0 ? "#FECACA" : "#BBF7D0"}`,
+          padding: "1px 7px",
+          borderRadius: 4,
         }}>
-          {missingCount > 0 ? `${missingCount} missing` : `${requirements.length} OK`}
+          {missing > 0 ? `${missing} missing` : "All OK"}
         </span>
       </div>
 
-      {/* Table */}
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
-        <thead>
-          <tr style={{ background: "rgba(255,255,255,0.02)" }}>
-            {["Cat", "Appliance", "Image / File", "Status", "ID"].map((h) => (
-              <th key={h} style={{
-                padding: "7px 12px", textAlign: "left",
-                fontWeight: 700, color: "rgba(255,255,255,0.25)",
-                fontSize: 9, letterSpacing: "0.08em", textTransform: "uppercase",
-                fontFamily: "monospace",
-                borderBottom: `1px solid ${BORDER}`,
-              }}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {requirements.map((req, i) => {
-            const scfg = STATUS_CFG[req.status] || STATUS_CFG.missing;
-            const catColor = CAT_COLOR[req.category] || "#6B7280";
-            return (
-              <tr key={i} style={{
-                borderBottom: i < requirements.length - 1 ? `1px solid ${BORDER}` : "none",
-                transition: "background .1s",
-              }}
-                onMouseOver={(e) => e.currentTarget.style.background = "rgba(255,255,255,0.02)"}
-                onMouseOut={(e)  => e.currentTarget.style.background = "transparent"}
-              >
-                <td style={{ padding: "9px 12px" }}>
-                  <span style={{
-                    fontSize: 9, fontFamily: "monospace", fontWeight: 700,
-                    color: catColor,
-                    background: `${catColor}15`,
-                    border: `1px solid ${catColor}30`,
-                    padding: "2px 6px", borderRadius: 3,
-                    textTransform: "uppercase", letterSpacing: "0.05em",
-                  }}>
-                    {req.category}
-                  </span>
-                </td>
-                <td style={{ padding: "9px 12px", color: "rgba(255,255,255,0.75)", fontWeight: 500 }}>
-                  {req.name}
-                </td>
-                <td style={{
-                  padding: "9px 12px",
-                  color: "rgba(255,255,255,0.3)",
-                  fontFamily: "monospace", fontSize: 10.5,
-                  maxWidth: 180, overflow: "hidden",
-                  textOverflow: "ellipsis", whiteSpace: "nowrap",
+      {/* Device list */}
+      <div style={{ padding: "10px 14px" }}>
+        {grouped.map((r, i) => {
+          const isOk = r.status === "ok";
+          const isMissing = r.status === "missing";
+          const isBuiltin = !r.image_required;
+          const category = (r.category || "").toUpperCase();
+
+          return (
+            <div key={i} style={{
+              padding: "8px 0",
+              borderBottom: i < grouped.length - 1 ? `1px solid ${MT}` : "none",
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                {/* Status dot */}
+                <span style={{
+                  width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
+                  background: isOk ? "#22C55E" : isMissing ? "#EF4444" : "#9CA3AF",
+                }}/>
+
+                {/* Template name */}
+                <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{r.name}</span>
+
+                {/* Count */}
+                <span style={{ fontSize: 11, color: "#6B7280" }}>x{r.count}</span>
+
+                {/* Category */}
+                <span style={{
+                  fontSize: 9, fontFamily: "monospace", fontWeight: 700,
+                  color: "#6B7280",
+                  background: MT,
+                  padding: "1px 6px",
+                  borderRadius: 3,
+                  letterSpacing: "0.04em",
                 }}>
-                  {req.image_file || <span style={{ color: "rgba(255,255,255,0.15)", fontStyle: "italic" }}>built-in</span>}
-                </td>
-                <td style={{ padding: "9px 12px" }}>
+                  {category}
+                </span>
+              </div>
+
+              {/* Node names */}
+              {r.nodeNames?.length > 0 && (
+                <div style={{ fontSize: 11, color: "#9CA3AF", marginLeft: 15, marginBottom: 4 }}>
+                  {r.nodeNames.join(", ")}
+                </div>
+              )}
+
+              {/* Image filename / status */}
+              <div style={{ marginLeft: 15 }}>
+                {isBuiltin ? (
                   <span style={{
-                    display: "inline-flex", alignItems: "center", gap: 5,
-                    fontSize: 10.5, fontWeight: 600, color: scfg.color,
-                    fontFamily: "monospace",
+                    fontSize: 11, color: "#6B7280", fontStyle: "italic",
                   }}>
-                    <span style={{ fontSize: 12 }}>{scfg.icon}</span>
-                    {scfg.label}
+                    Built-in — no image required
                   </span>
-                </td>
-                <td style={{ padding: "9px 12px" }}>
-                  <span style={{
-                    fontSize: 10, fontFamily: "monospace",
-                    color: "rgba(255,255,255,0.3)",
-                    background: "rgba(255,255,255,0.05)",
-                    border: `1px solid ${BORDER}`,
-                    padding: "2px 6px", borderRadius: 4,
+                ) : r.image_file ? (
+                  <div style={{
+                    fontSize: 11, fontFamily: "monospace",
+                    color: G,
+                    background: "rgba(22,101,52,0.06)",
+                    border: "1px solid rgba(22,101,52,0.15)",
+                    padding: "3px 8px",
+                    borderRadius: 4,
+                    display: "inline-block",
+                    wordBreak: "break-all",
                   }}>
-                    {req.node_id}
-                  </span>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                    {r.image_file}
+                    <span style={{ fontSize: 10, color: "#9CA3AF", display: "block", marginTop: 2 }}>
+                      Source: Profile / Appliance defaults
+                    </span>
+                  </div>
+                ) : (
+                  <div style={{
+                    fontSize: 11, fontFamily: "monospace",
+                    color: "#DC2626",
+                    background: "#FEF2F2",
+                    border: "1px solid #FECACA",
+                    padding: "3px 8px",
+                    borderRadius: 4,
+                    display: "inline-block",
+                  }}>
+                    Image not configured — set in profile
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

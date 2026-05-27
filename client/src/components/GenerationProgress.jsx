@@ -1,80 +1,89 @@
-import { Icon, PATHS } from "./Icons";
+import NetworkLoader from "./NetworkLoader";
 
-const PRIMARY = "#166534";
-const BORDER = "#E5E7EB";
+const G = "#166534";
+const BD = "#E5E7EB";
 
-const PHASE_LABELS = {
-  generating: { label: "Generating Topology", icon: PATHS.sparkles, color: PRIMARY },
-  thinking: { label: "AI Thinking", icon: PATHS.search, color: "#2563EB" },
-  building: { label: "Building Topology", icon: PATHS.settings, color: "#7C3AED" },
-  review: { label: "Review Ready", icon: PATHS.check, color: PRIMARY },
-  exporting: { label: "Exporting", icon: PATHS.download, color: "#D97706" },
-  generating_configs: { label: "Generating Device Configs", icon: PATHS.settings, color: "#7C3AED" },
-  validating: { label: "Validating Project", icon: PATHS.shield, color: "#2563EB" },
-  success: { label: "Complete", icon: PATHS.check, color: PRIMARY },
-  error: { label: "Error", icon: PATHS.alert, color: "#DC2626" },
+function Ic({ d, size = 16, color }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke={color || "currentColor"} strokeWidth="1.5"
+      strokeLinecap="round" strokeLinejoin="round">
+      <path d={d}/>
+    </svg>
+  );
+}
+
+const IC = {
+  sparkles: "M12 3l1.912 5.813L20 11l-6.088 2.187L12 19l-1.912-5.813L4 11l6.088-2.187L12 3z",
+  settings: "M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z",
 };
 
-export default function GenerationProgress({ phase }) {
-  if (!phase) return null;
-
-  const { phase: currentPhase, sub_phase } = phase;
-  const effectivePhase = sub_phase || currentPhase;
-  const phaseInfo = PHASE_LABELS[effectivePhase] || PHASE_LABELS[currentPhase] || { label: currentPhase, icon: PATHS.settings, color: "#6B7280" };
-
-  const isDone = currentPhase === "success" || currentPhase === "error";
+/**
+ * GenerationProgress — White card with dark code block streaming JSON topology.
+ * Shows: header with icon + title, NetworkLoader, dark code block with streaming text + blinking cursor.
+ */
+export default function GenerationProgress({ title, icon, streamingText, isStreaming }) {
+  const headerTitle = title || "Generating Topology";
+  const iconPath = icon || IC.sparkles;
 
   return (
-    <div
-      style={{
-        fontFamily: "'Geist', system-ui, sans-serif",
-        border: `1px solid ${BORDER}`,
-        borderRadius: 10,
-        overflow: "hidden",
-        background: "white",
-      }}
-    >
-      <div style={{ padding: "12px 14px", display: "flex", alignItems: "center", gap: 10 }}>
-        <div
-          style={{
-            width: 32,
-            height: 32,
-            borderRadius: 8,
-            background: `${phaseInfo.color}10`,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            animation: isDone ? "none" : "pulse 2s infinite",
-          }}
-        >
-          <Icon d={phaseInfo.icon} size={16} style={{ color: phaseInfo.color }} />
+    <div style={{
+      border: `1px solid ${BD}`,
+      borderRadius: 12,
+      overflow: "hidden",
+      marginBottom: 16,
+      background: "white",
+      fontFamily: "'Geist', 'Inter', system-ui, sans-serif",
+    }}>
+      {/* Header */}
+      <div style={{
+        padding: "10px 14px",
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        borderBottom: `1px solid ${BD}`,
+        background: "#FAFAFA",
+      }}>
+        <div style={{
+          width: 28, height: 28, borderRadius: 6,
+          background: "#F0FDF4",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          color: G, flexShrink: 0,
+        }}>
+          <Ic d={iconPath} size={14}/>
         </div>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "#111" }}>{phaseInfo.label}</div>
-          <div style={{ fontSize: 11, color: "#6B7280" }}>
-            {currentPhase === "generating" && sub_phase === "thinking" && "Analyzing your network requirements..."}
-            {currentPhase === "generating" && sub_phase === "building" && "Constructing topology and assigning hardware..."}
-            {currentPhase === "review" && "Topology is ready for your review"}
-            {currentPhase === "exporting" && sub_phase === "generating_configs" && "Writing device startup configurations..."}
-            {currentPhase === "exporting" && sub_phase === "validating" && "Validating GNS3 project integrity..."}
-            {currentPhase === "exporting" && !sub_phase && "Preparing GNS3 project export..."}
-            {currentPhase === "success" && "GNS3 project ready for download"}
-            {currentPhase === "error" && "An error occurred during generation"}
-          </div>
-        </div>
-        <div style={{ marginLeft: "auto" }}>
-          <div
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: 4,
-              background: currentPhase === "success" ? PRIMARY : currentPhase === "error" ? "#DC2626" : "#D97706",
-              animation: isDone ? "none" : "pulse 1.5s infinite",
-            }}
-          />
-        </div>
+        <span style={{ fontSize: 13, fontWeight: 600, color: "#111" }}>{headerTitle}</span>
+        {isStreaming && <NetworkLoader size={20}/>}
       </div>
-      <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }`}</style>
+
+      {/* Dark code block */}
+      <div style={{
+        background: "#1E1E1E",
+        padding: "14px",
+        fontFamily: "'Courier New', 'Geist Mono', monospace",
+        fontSize: 12,
+        color: "#9CDCFE",
+        lineHeight: 1.65,
+        maxHeight: 120,
+        overflowY: "auto",
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-all",
+      }}>
+        {streamingText || ""}
+        {isStreaming && (
+          <span style={{
+            display: "inline-block",
+            width: 2,
+            height: 14,
+            background: G,
+            verticalAlign: "text-bottom",
+            marginLeft: 1,
+            animation: "gpBlink 1s step-end infinite",
+          }}/>
+        )}
+      </div>
+
+      <style>{`@keyframes gpBlink{0%,100%{opacity:1}50%{opacity:0}}`}</style>
     </div>
   );
 }

@@ -1,80 +1,48 @@
-import { Icon, PATHS } from "./Icons";
+const G = "#166534";
 
 /**
- * Streaming text display — Claude-style inline bold-labeled paragraphs.
- * Replaces the old colored-card approach.
- *
- * Each thought has: { id, type, content, timestamp }
- * Types: understanding, decision, assumption, warning
+ * ThoughtStream — AI thinking/reasoning display.
+ * Shows thoughts with colored dots and labels inline.
  */
-const TYPE_LABELS = {
-  understanding: "Understanding your request",
-  decision: "Device selection",
-  assumption: "Assumptions",
-  warning: "Warning",
+const THOUGHT_TYPE = {
+  understanding: { label: "Understanding", dot: "#3B82F6" },
+  decision:      { label: "Device selection", dot: "#10B981" },
+  assumption:    { label: "Assumption", dot: "#F59E0B" },
+  warning:       { label: "Warning", dot: "#EF4444" },
+  info:          { label: "Info", dot: "#8B5CF6" },
 };
 
-const TYPE_ICONS = {
-  understanding: PATHS.search,
-  decision: PATHS.sparkles,
-  assumption: PATHS.alert,
-  warning: PATHS.alert,
-};
-
-export default function ThoughtStream({ thoughts = [] }) {
+export default function ThoughtStream({ thoughts = [], isStreaming }) {
   if (thoughts.length === 0) return null;
 
-  // Group consecutive thoughts of same type for paragraph flow
-  // But render each as its own bold-labeled paragraph
   return (
-    <div style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
-      {/* Streaming text paragraphs */}
-      <div
-        style={{
-          fontSize: 14,
-          color: "#374151",
-          lineHeight: 1.7,
-          marginBottom: 16,
-        }}
-      >
-        {thoughts.map((t, i) => {
-          const label = TYPE_LABELS[t.type] || "Analysis";
-          const content = t.text || t.content || "";
-          const isLast = i === thoughts.length - 1;
-
-          return (
-            <span key={t.id || i}>
-              <strong style={{ color: "#111", fontWeight: 600 }}>{label}</strong>
-              {" -- "}
-              {content}
-              {isLast ? (
-                <span
-                  style={{
-                    display: "inline-block",
-                    width: 2,
-                    height: 14,
-                    background: "#166534",
-                    verticalAlign: "text-bottom",
-                    marginLeft: 1,
-                    animation: "blink 1s step-end infinite",
-                  }}
-                />
-              ) : (
-                <>
-                  <br />
-                  <br />
-                </>
-              )}
+    <div style={{ marginBottom: 16, fontFamily: "'Geist', 'Inter', system-ui, sans-serif" }}>
+      {thoughts.map((t, i) => {
+        const cfg = THOUGHT_TYPE[t.type] || THOUGHT_TYPE.info;
+        const isLast = i === thoughts.length - 1;
+        return (
+          <div key={t.id || i} style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 6 }}>
+            <span style={{
+              width: 6, height: 6, borderRadius: "50%",
+              background: cfg.dot, flexShrink: 0, marginTop: 7,
+            }}/>
+            <span style={{ fontSize: 14, color: "#374151", lineHeight: 1.6 }}>
+              <strong style={{ color: "#111", fontWeight: 600 }}>{cfg.label}</strong>
+              {" — "}
+              {t.content || t.text}
             </span>
-          );
-        })}
-      </div>
-
-      <style>{`
-        @keyframes blink {
-          50% { opacity: 0; }
-        }
-      `}</style>
+          </div>
+        );
+      })}
+      {isStreaming && (
+        <span style={{
+          display: "inline-block", width: 2, height: 14,
+          background: G, marginLeft: 14,
+          verticalAlign: "text-bottom",
+          animation: "tsBlink 1s step-end infinite",
+        }}/>
+      )}
+      <style>{`@keyframes tsBlink{0%,100%{opacity:1}50%{opacity:0}}`}</style>
     </div>
   );
 }

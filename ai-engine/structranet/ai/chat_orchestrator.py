@@ -166,9 +166,9 @@ TOOL USAGE RULES:
      * 'basic': SSH, AAA, banners, NTP, Syslog on every router
      * 'enterprise': Full Zone-Based Firewall, ACLs, DAI, DHCP Snooping, SNMPv3, HSRP, uRPF, OSPF auth
 
-4. **search_cisco_knowledge**: Call when the user asks about Cisco IOS commands or protocol configuration.
+4. **search_cisco_knowledge**: Call when the user asks about Cisco IOS commands, protocol configuration, or security hardening/features (e.g., Port Security, AAA, VPN, ZBF).
    - Returns Markdown with code blocks showing exact IOS commands.
-   - Use this for "how do I configure X" questions, not for topology design.
+   - Use this for "how do I configure X" or "how to secure Y" questions, not for topology design.
 
 COMPOUND INTENTS:
 If the user combines multiple actions in one message (e.g., "Design a campus network and apply enterprise security"), handle them sequentially:

@@ -193,9 +193,10 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "name": "search_cisco_knowledge",
             "description": (
                 "Search the Cisco IOS knowledge base for specific commands, "
-                "protocol configurations, or troubleshooting steps. Call this when "
+                "protocol configurations, troubleshooting steps, or security hardening/features "
+                "(e.g., Port Security, AAA, VPN, ZBF). Call this when "
                 "the user asks about how to configure something on a Cisco device "
-                "(e.g., OSPF, VLANs, ACLs, NAT, HSRP). Returns formatted Markdown "
+                "(e.g., OSPF, VLANs, ACLs, NAT, HSRP, Zone-Based Firewall). Returns formatted Markdown "
                 "with IOS command examples."
             ),
             "parameters": {
@@ -204,9 +205,9 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
                     "topic": {
                         "type": "string",
                         "description": (
-                            "The networking topic or protocol to search for. "
+                            "The networking topic, protocol, or security feature to search for. "
                             "Examples: 'OSPF configuration', 'VLAN trunking', "
-                            "'HSRP setup', 'NAT overload', 'access-list'"
+                            "'HSRP setup', 'NAT overload', 'access-list', 'Port Security', 'IKEv2 VPN'"
                         ),
                     },
                 },

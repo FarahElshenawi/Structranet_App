@@ -594,3 +594,534 @@ Router(config)# service password-encryption
 Router(config)# security passwords min-length 10
 Router(config)# login block-for 60 attempts 3 within 30
 Router# show running-config | include no
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+Cisco IOS — Security Commands Complete Security Reference — All Layers (L1 to L7)
+ GNS3 / Cisco IOS — 2026
+ 
+Layer 1 | Physical Layer — Physical Security
+■ Disable Unused Ports
+Switch> enable
+Switch# configure terminal
+Switch(config)# interface range FastEthernet0/5 - 24
+Switch(config-if-range)# shutdown
+Switch(config-if-range)# description PORT-DISABLED-SECURITY
+Switch(config-if-range)# exit
+Switch(config)# interface FastEthernet0/1
+Switch(config-if)# no shutdown
+Switch(config-if)# description PC-USER-1
+Switch(config-if)# exit
+Switch# write memory
+Switch# show interfaces status
+■ Error-Disable Recovery
+Switch(config)# errdisable recovery cause all
+Switch(config)# errdisable recovery interval 300
+Switch# show errdisable recovery
+Switch# show interfaces status err-disabled
+Layer 2 | Data Link Layer — L2 Attack Prevention
+■ Port Security — MAC Filtering
+Switch(config)# interface FastEthernet0/1
+Switch(config-if)# switchport mode access
+Switch(config-if)# switchport port-security
+Switch(config-if)# switchport port-security maximum 2
+Switch(config-if)# switchport port-security violation restrict
+Switch(config-if)# switchport port-security violation shutdown
+Switch(config-if)# switchport port-security violation protect
+Switch(config-if)# switchport port-security mac-address sticky
+Switch(config-if)# switchport port-security mac-address 0050.7966.0001
+Switch(config-if)# exit
+Switch# show port-security
+Switch# show port-security interface Fa0/1
+Switch# show port-security address
+■ VLAN Segmentation & Hardening
+Switch(config)# vlan 10
+Switch(config-vlan)# name MANAGEMENT
+Switch(config)# vlan 20
+Switch(config-vlan)# name USERS
+Switch(config)# vlan 30
+Switch(config-vlan)# name SERVERS
+
+
+Switch(config)# vlan 40
+Switch(config-vlan)# name VOIP
+Switch(config)# vlan 50
+Switch(config-vlan)# name IOT
+Switch(config)# vlan 100
+Switch(config-vlan)# name GUEST
+Switch(config)# vlan 999
+Switch(config-vlan)# name NATIVE-UNUSED
+Switch(config-vlan)# exit
+Switch(config-if)# switchport trunk native vlan 999
+Switch(config-if)# switchport nonegotiate
+Switch# show vlan brief
+■ DHCP Snooping
+Switch(config)# ip dhcp snooping
+Switch(config)# ip dhcp snooping vlan 10,20,30,40,50,100
+Switch(config)# no ip dhcp snooping information option
+Switch(config)# ip dhcp snooping limit rate 15
+Switch(config)# interface Fa0/24
+Switch(config-if)# ip dhcp snooping trust
+Switch(config-if)# exit
+Switch# show ip dhcp snooping
+Switch# show ip dhcp snooping binding
+Switch# show ip dhcp snooping statistics
+■ Dynamic ARP Inspection (DAI)
+Switch(config)# ip arp inspection vlan 10,20,30,40,50,100
+Switch(config)# ip arp inspection validate src-mac dst-mac ip
+Switch(config)# interface Fa0/24
+Switch(config-if)# ip arp inspection trust
+Switch(config-if)# exit
+Switch(config)# interface range Fa0/1 - 20
+Switch(config-if-range)# ip arp inspection limit rate 100
+Switch(config-if-range)# exit
+Switch# show ip arp inspection
+Switch# show ip arp inspection vlan 10
+Switch# show ip arp inspection statistics
+■ STP Security — BPDUGuard & RootGuard
+Switch(config)# spanning-tree mode rapid-pvst
+Switch(config)# spanning-tree portfast default
+Switch(config)# spanning-tree portfast bpduguard default
+Switch(config)# interface range Fa0/1 - 20
+Switch(config-if-range)# spanning-tree portfast
+Switch(config-if-range)# spanning-tree bpduguard enable
+Switch(config-if-range)# exit
+Switch(config)# interface Fa0/24
+Switch(config-if)# spanning-tree guard root
+Switch(config-if)# exit
+Switch# show spanning-tree summary
+Switch# show spanning-tree inconsistentports
+■ 802.1X Port Authentication
+Switch(config)# aaa new-model
+Switch(config)# aaa authentication dot1x default group radius
+Switch(config)# dot1x system-auth-control
+Switch(config)# interface Fa0/1
+
+
+Switch(config-if)# dot1x port-control auto
+Switch(config-if)# dot1x timeout quiet-period 30
+Switch(config-if)# dot1x max-req 3
+Switch(config-if)# exit
+Switch# show dot1x
+Switch# show dot1x interface Fa0/1
+Switch# show dot1x all
+■ Disable CDP/LLDP on Access Ports
+Switch(config)# interface range Fa0/1 - 20
+Switch(config-if-range)# no cdp enable
+Switch(config-if-range)# no lldp transmit
+Switch(config-if-range)# no lldp receive
+Switch(config-if-range)# exit
+■ IP Source Guard
+Switch(config)# interface FastEthernet0/1
+Switch(config-if)# ip verify source
+Switch(config-if)# ip verify source port-security
+Switch(config-if)# exit
+Switch# show ip verify source
+Layer 3 | Network Layer — Routing Security & ACLs
+■ ACL — Anti-Spoofing (RFC1918 + Bogons)
+Router(config)# ip access-list extended BLOCK-INBOUND
+Router(config-ext-nacl)# deny ip 10.0.0.0 0.255.255.255 any log
+Router(config-ext-nacl)# deny ip 172.16.0.0 0.15.255.255 any log
+Router(config-ext-nacl)# deny ip 192.168.0.0 0.0.255.255 any log
+Router(config-ext-nacl)# deny ip 0.0.0.0 0.255.255.255 any log
+Router(config-ext-nacl)# deny ip 127.0.0.0 0.255.255.255 any log
+Router(config-ext-nacl)# deny ip 169.254.0.0 0.0.255.255 any log
+Router(config-ext-nacl)# deny ip 224.0.0.0 15.255.255.255 any log
+Router(config-ext-nacl)# permit tcp any 192.168.2.0 0.0.0.255 eq 443
+Router(config-ext-nacl)# permit tcp any 192.168.2.0 0.0.0.255 eq 80
+Router(config-ext-nacl)# deny ip any any log
+Router(config-ext-nacl)# exit
+Router(config)# interface GigabitEthernet0/0
+Router(config-if)# ip access-group BLOCK-INBOUND in
+Router(config-if)# exit
+Router# show ip access-lists
+■ uRPF — Unicast Reverse Path Forwarding
+Router(config)# interface GigabitEthernet0/0
+Router(config-if)# ip verify unicast source reachable-via rx
+Router(config-if)# ip verify unicast source reachable-via any
+Router(config-if)# exit
+Router# show ip interface GigabitEthernet0/0 | include verify
+Router# show cef interface GigabitEthernet0/0
+■ OSPF Authentication
+Router(config)# interface GigabitEthernet0/1
+Router(config-if)# ip ospf authentication message-digest
+Router(config-if)# ip ospf message-digest-key 1 md5 MySecureKey123!
+Router(config-if)# exit
+Router(config)# router ospf 1
+
+
+Router(config-router)# area 0 authentication message-digest
+Router(config-router)# exit
+Router# show ip ospf neighbor
+■ EIGRP Authentication
+Router(config)# key chain EIGRP-KEY
+Router(config-keychain)# key 1
+Router(config-keychain-key)# key-string EIGRPsecret!
+Router(config-keychain-key)# exit
+Router(config)# interface GigabitEthernet0/1
+Router(config-if)# ip authentication mode eigrp 100 md5
+Router(config-if)# ip authentication key-chain eigrp 100 EIGRP-KEY
+Router(config-if)# exit
+■ BGP Security
+Router(config)# router bgp 65001
+Router(config-router)# neighbor 203.0.113.2 password BGPsecret!
+Router(config-router)# neighbor 203.0.113.2 ttl-security hops 1
+Router(config-router)# neighbor 203.0.113.2 maximum-prefix 1000 90
+Router(config-router)# neighbor 203.0.113.2 route-map FILTER-IN in
+Router(config-router)# neighbor 203.0.113.2 route-map FILTER-OUT out
+Router(config-router)# exit
+■ Disable Dangerous Services
+Router(config)# no ip source-route
+Router(config)# no ip directed-broadcast
+Router(config)# no ip proxy-arp
+Router(config)# no ip redirects
+Router(config)# no ip unreachables
+Router(config)# no ip mask-reply
+Router(config)# no ip bootp server
+Router(config)# no service finger
+Router(config)# no service tcp-small-servers
+Router(config)# no service udp-small-servers
+Router(config)# no ip http server
+■ Zone-Based Firewall (ZBF)
+Router(config)# zone security INSIDE
+Router(config-sec-zone)# exit
+Router(config)# zone security DMZ
+Router(config-sec-zone)# exit
+Router(config)# zone security OUTSIDE
+Router(config-sec-zone)# exit
+Router(config)# class-map type inspect match-any INSIDE-TRAFFIC
+Router(config-cmap)# match protocol http
+Router(config-cmap)# match protocol https
+Router(config-cmap)# match protocol dns
+Router(config-cmap)# exit
+Router(config)# policy-map type inspect INSIDE-TO-OUT
+Router(config-pmap)# class type inspect INSIDE-TRAFFIC
+Router(config-pmap-c)# inspect
+Router(config-pmap)# class class-default
+Router(config-pmap-c)# drop log
+Router(config)# zone-pair security IN-OUT source INSIDE destination OUTSIDE
+Router(config-sec-zone-pair)# service-policy type inspect INSIDE-TO-OUT
+Router(config)# interface GigabitEthernet0/0
+Router(config-if)# zone-member security OUTSIDE
+
+
+Router(config)# interface GigabitEthernet0/2
+Router(config-if)# zone-member security INSIDE
+Router# show zone security
+Router# show zone-pair security
+Router# show policy-map type inspect zone-pair
+Layer 4 | Transport Layer — TCP/UDP Protection
+■ TCP Intercept — SYN Flood Protection
+Router(config)# ip access-list extended PROTECT-SYN
+Router(config-ext-nacl)# permit tcp any 192.168.2.0 0.0.0.255
+Router(config-ext-nacl)# exit
+Router(config)# ip tcp intercept list PROTECT-SYN
+Router(config)# ip tcp intercept mode intercept
+Router(config)# ip tcp intercept max-incomplete high 1100
+Router(config)# ip tcp intercept max-incomplete low 900
+Router(config)# ip tcp intercept one-minute high 1100
+Router(config)# ip tcp intercept one-minute low 900
+Router(config)# ip tcp intercept watch-timeout 30
+Router(config)# ip tcp intercept drop-mode oldest
+Router# show tcp intercept statistics
+Router# show tcp intercept connections
+■ Port Filtering ACL (DMZ / Management)
+Router(config)# ip access-list extended DMZ-PORTS
+Router(config-ext-nacl)# permit tcp any 192.168.2.0 0.0.0.255 eq 80
+Router(config-ext-nacl)# permit tcp any 192.168.2.0 0.0.0.255 eq 443
+Router(config-ext-nacl)# deny udp any any eq 19
+Router(config-ext-nacl)# deny udp any any eq 1900
+Router(config-ext-nacl)# deny udp any any eq 5353
+Router(config-ext-nacl)# deny udp any any eq 11211
+Router(config-ext-nacl)# deny ip any any log
+Router(config-ext-nacl)# exit
+Router(config)# ip access-list extended BLOCK-DANGEROUS
+Router(config-ext-nacl)# deny tcp any any eq 23 log
+Router(config-ext-nacl)# deny tcp any any eq 21 log
+Router(config-ext-nacl)# deny tcp any any eq 135 log
+Router(config-ext-nacl)# deny tcp any any eq 139 log
+Router(config-ext-nacl)# deny tcp any any eq 445 log
+Router(config-ext-nacl)# deny tcp any any eq 3389 log
+Router(config-ext-nacl)# deny tcp any any eq 5900 log
+Router(config-ext-nacl)# permit ip any any
+Router(config-ext-nacl)# exit
+■ Rate Limiting & Storm Control
+Router(config)# interface GigabitEthernet0/0
+Router(config-if)# rate-limit input 10000000 1000000 2000000 conform-action transmit exceed-action drop
+Router(config-if)# rate-limit output 10000000 1000000 2000000 conform-action transmit exceed-action drop
+Router(config-if)# exit
+Switch(config)# interface GigabitEthernet0/1
+Switch(config-if)# storm-control broadcast level 20.00
+Switch(config-if)# storm-control multicast level 20.00
+Switch(config-if)# storm-control unicast level 80.00
+Switch(config-if)# storm-control action shutdown
+Switch(config-if)# storm-control action trap
+Switch(config-if)# exit
+
+
+Switch# show storm-control
+Switch# show storm-control broadcast
+■ TLS Enforcement (IOS HTTPS)
+Router(config)# ip http secure-server
+Router(config)# no ip http server
+Router(config)# ip http secure-trustpoint MY-CA
+Router(config)# ip ssh version 2
+Router(config)# ip ssh dh min size 2048
+Router# show ip http server secure status
+Layer 5 | Session Layer — AAA & Session Security
+■ AAA — Authentication Authorization Accounting
+Router(config)# aaa new-model
+Router(config)# aaa authentication login default local
+Router(config)# aaa authentication login VTY-AUTH group radius local
+Router(config)# aaa authentication enable default group tacacs+ enable
+Router(config)# aaa authorization exec default local
+Router(config)# aaa authorization exec VTY-AUTH group radius local
+Router(config)# aaa authorization commands 15 default group tacacs+ local
+Router(config)# aaa accounting exec default start-stop group tacacs+
+Router(config)# aaa accounting commands 15 default start-stop group tacacs+
+Router(config)# aaa accounting network default start-stop group radius
+Router# show aaa sessions
+Router# show aaa user all
+Router# debug aaa authentication
+Router# debug aaa authorization
+■ RADIUS Server
+Router(config)# radius server MAIN-RADIUS
+Router(config-radius-server)# address ipv4 192.168.10.20 auth-port 1812 acct-port 1813
+Router(config-radius-server)# key SecureRadiusKey!@#
+Router(config-radius-server)# timeout 5
+Router(config-radius-server)# retransmit 3
+Router(config-radius-server)# exit
+Router# show radius server-group all
+Router# show radius statistics
+Router# debug radius
+■ TACACS+ Server
+Router(config)# tacacs server TACACS-SRV
+Router(config-server-tacacs)# address ipv4 192.168.10.21
+Router(config-server-tacacs)# key TacacsKey!@#
+Router(config-server-tacacs)# timeout 5
+Router(config-server-tacacs)# exit
+Router(config)# aaa group server tacacs+ TACACS-GROUP
+Router(config-sg-tacacs+)# server name TACACS-SRV
+Router# show tacacs
+Router# debug tacacs
+■ SSH v2 Hardening
+Router(config)# hostname R1
+Router(config)# ip domain-name lab.local
+Router(config)# crypto key generate rsa modulus 4096
+Router(config)# ip ssh version 2
+
+
+Router(config)# ip ssh time-out 60
+Router(config)# ip ssh authentication-retries 3
+Router(config)# ip ssh dh min size 2048
+Router(config)# ip ssh logging events
+Router(config)# ip ssh pubkey-chain
+Router# show ip ssh
+Router# show ssh
+■ VTY Hardening & Session Timeouts
+Router(config)# line vty 0 4
+Router(config-line)# transport input ssh
+Router(config-line)# exec-timeout 15 0
+Router(config-line)# session-timeout 480
+Router(config-line)# absolute-timeout 720
+Router(config-line)# login authentication VTY-AUTH
+Router(config-line)# access-class 10 in
+Router(config-line)# logging synchronous
+Router(config-line)# exit
+Router(config)# line console 0
+Router(config-line)# exec-timeout 5 0
+Router(config-line)# logging synchronous
+Router(config-line)# exit
+Router(config)# line aux 0
+Router(config-line)# transport input none
+Router(config-line)# no exec
+Router(config-line)# exit
+■ Login Security & Brute-Force Protection
+Router(config)# login block-for 60 attempts 3 within 30
+Router(config)# login delay 3
+Router(config)# login on-failure log
+Router(config)# login on-success log
+Router(config)# security passwords min-length 12
+Router(config)# username admin privilege 15 algorithm-type scrypt secret Admin@2026!
+Router(config)# username viewer privilege 1 algorithm-type scrypt secret View@2026!
+Router(config)# enable algorithm-type scrypt secret Enable@2026!
+Router# show login
+Router# show login failures
+Router# show users
+Layer 6 | Presentation Layer — Cryptography & PKI
+■ PKI — Internal Certificate Authority
+Router(config)# crypto pki server MY-CA
+Router(cs-server)# issuer-name CN=MyLabCA,O=Lab,C=EG
+Router(cs-server)# grant auto
+Router(cs-server)# lifetime ca-certificate 3650
+Router(cs-server)# lifetime certificate 365
+Router(cs-server)# cdp-url http://192.168.10.5/crl.crl
+Router(cs-server)# database url tftp://192.168.10.50/
+Router(cs-server)# no shutdown
+Router(cs-server)# exit
+Router# show crypto pki server
+Router# show crypto pki server MY-CA requests
+Router# show crypto pki certificates
+
+
+■ IPsec VPN — IKEv2 (AES-256-GCM)
+Router(config)# crypto ikev2 proposal IKEv2-PROP
+Router(config-ikev2-proposal)# encryption aes-cbc-256
+Router(config-ikev2-proposal)# integrity sha384
+Router(config-ikev2-proposal)# group 21
+Router(config-ikev2-proposal)# exit
+Router(config)# crypto ikev2 policy IKEv2-POL
+Router(config-ikev2-policy)# proposal IKEv2-PROP
+Router(config-ikev2-policy)# exit
+Router(config)# crypto ikev2 keyring MY-KEYS
+Router(config-ikev2-keyring)# peer REMOTE
+Router(config-ikev2-keyring-peer)# address 203.0.113.2
+Router(config-ikev2-keyring-peer)# pre-shared-key IKEv2secret!
+Router(config-ikev2-keyring-peer)# exit
+Router(config)# crypto ikev2 profile IKEv2-PROF
+Router(config-ikev2-profile)# match identity remote address 203.0.113.2
+Router(config-ikev2-profile)# authentication remote pre-share
+Router(config-ikev2-profile)# authentication local pre-share
+Router(config-ikev2-profile)# keyring local MY-KEYS
+Router(config-ikev2-profile)# exit
+Router(config)# crypto ipsec transform-set SECURE-SET esp-aes 256 esp-sha384-hmac
+Router(cfg-crypto-trans)# mode tunnel
+Router(cfg-crypto-trans)# exit
+Router(config)# crypto map VPN-MAP 10 ipsec-isakmp
+Router(config-crypto-map)# set peer 203.0.113.2
+Router(config-crypto-map)# set transform-set SECURE-SET
+Router(config-crypto-map)# set ikev2-profile IKEv2-PROF
+Router(config-crypto-map)# set pfs group21
+Router(config-crypto-map)# set security-association lifetime seconds 3600
+Router(config-crypto-map)# match address VPN-TRAFFIC
+Router(config-crypto-map)# exit
+Router(config-if)# crypto map VPN-MAP
+Router# show crypto ikev2 sa
+Router# show crypto ipsec sa
+Router# show crypto map
+■ ISAKMP (IKEv1) Legacy
+Router(config)# crypto isakmp policy 10
+Router(config-isakmp)# encryption aes 256
+Router(config-isakmp)# hash sha384
+Router(config-isakmp)# authentication pre-share
+Router(config-isakmp)# group 21
+Router(config-isakmp)# lifetime 28800
+Router(config-isakmp)# exit
+Router(config)# crypto isakmp key VPNkey123! address 203.0.113.2
+Router# show crypto isakmp sa
+Router# show crypto isakmp policy
+Router# debug crypto isakmp
+Router# debug crypto ipsec
+■ MACsec (802.1AE)
+Switch(config)# key chain MACSEC-CHAIN macsec
+Switch(config-keychain)# key 01
+Switch(config-keychain-key)# cryptographic-algorithm aes-128-cmac
+Switch(config-keychain-key)# key-string MACsecKey123!
+Switch(config-keychain-key)# exit
+Switch(config)# mka policy MKA-POLICY
+
+
+Switch(config-mka-policy)# macsec-cipher-suite gcm-aes-256
+Switch(config-mka-policy)# exit
+Switch(config-if)# macsec network-link
+Switch(config-if)# mka policy MKA-POLICY
+Switch(config-if)# mka pre-shared-key key-chain MACSEC-CHAIN
+Switch# show macsec summary
+Switch# show mka sessions
+Layer 7 | Application Layer — App Security & Hardening
+■ SNMPv3 — Secure (Disable v1/v2)
+Router(config)# no snmp-server community public ro
+Router(config)# no snmp-server community private rw
+Router(config)# snmp-server view ALL-MIB iso included
+Router(config)# snmp-server group SECURE-GROUP v3 priv read ALL-MIB
+Router(config)# snmp-server user SNMP-ADMIN SECURE-GROUP v3 auth sha AuthPass123! priv aes 256 PrivPass123!
+Router(config)# snmp-server host 192.168.10.100 version 3 priv SNMP-ADMIN
+Router(config)# snmp-server enable traps
+Router(config)# snmp-server enable traps snmp authentication
+Router(config)# snmp-server access-class SNMP-ACL ipv4
+Router(config)# ip access-list standard SNMP-ACL
+Router(config-std-nacl)# permit 192.168.10.0 0.0.0.255
+Router(config-std-nacl)# deny any log
+Router# show snmp user
+Router# show snmp group
+Router# show snmp host
+■ NTP Authentication
+Router(config)# ntp authenticate
+Router(config)# ntp authentication-key 1 md5 NtpKey!2026
+Router(config)# ntp trusted-key 1
+Router(config)# ntp server 192.168.10.5 key 1
+Router(config)# ntp access-group peer 10
+Router(config)# ntp access-group serve-only 10
+Router(config)# ip access-list standard NTP-ACL
+Router(config-std-nacl)# permit 192.168.10.0 0.0.0.255
+Router# show ntp status
+Router# show ntp associations
+Router# show ntp associations detail
+■ DNS Security
+Router(config)# ip dns server
+Router(config)# ip name-server 1.1.1.1
+Router(config)# ip name-server 8.8.8.8
+Router(config)# ip access-list extended DNS-PROTECT
+Router(config-ext-nacl)# permit udp 192.168.0.0 0.0.255.255 any eq 53
+Router(config-ext-nacl)# deny udp any any eq 53 log
+Router(config-ext-nacl)# exit
+Router(config-if)# ip access-group DNS-PROTECT in
+■ Syslog to SIEM
+Router(config)# logging on
+Router(config)# logging host 192.168.10.100
+Router(config)# logging host 192.168.10.101 transport tcp port 6514
+Router(config)# logging trap informational
+Router(config)# logging buffered 65536 informational
+
+
+Router(config)# logging source-interface GigabitEthernet0/3
+Router(config)# logging origin-id hostname
+Router(config)# service timestamps log datetime msec show-timezone
+Router(config)# service timestamps debug datetime msec
+Router# show logging
+Router# show logging | include SEC
+■ Login Banner & Legal Notice
+Router(config)# banner motd ^
+Router(config)# *** AUTHORIZED ACCESS ONLY ***
+Router(config)# Unauthorized access is prohibited and monitored.
+Router(config)# All activity is logged and may be reviewed.
+Router(config)# Disconnect IMMEDIATELY if not authorized.
+Router(config)# ^
+Router(config)# banner login ^
+Router(config)# WARNING: This system is for authorized users only.
+Router(config)# ^
+Router(config)# banner exec ^
+Router(config)# You are now logged in. Session is being monitored.
+Router(config)# ^
+■ HTTP Management Hardening
+Router(config)# no ip http server
+Router(config)# ip http secure-server
+Router(config)# ip http secure-trustpoint MY-CA
+Router(config)# ip http access-class MGMT-ACL
+Router(config)# ip http authentication aaa
+Router(config)# ip http max-connections 5
+Router(config)# ip access-list standard MGMT-ACL
+Router(config-std-nacl)# permit 192.168.10.0 0.0.0.255
+Router(config-std-nacl)# deny any log
+Router# show ip http server secure status
+■ Security Audit Show Commands
+Router# show version
+Router# show ip ssh
+Router# show ssh
+Router# show users
+Router# show users all
+Router# show privilege
+Router# show crypto pki certificates
+Router# show aaa sessions
+Router# show login
+Router# show login failures
+Router# show running-config | include password
+Router# show running-config | include enable
+Router# show running-config | include username
+Router# show running-config | include aaa
+Router# show running-config | include snmp
+Router# show running-config | include logging
+Router# show running-config | include ntp
+Router# show ip access-lists
+Router# show ip interface brief

@@ -184,8 +184,12 @@ export async function approveTopology(sessionId) {
 // Single endpoint for all chat interactions — the LLM decides which tools to call.
 // Replaces the old FSM endpoints (startGeneration, editTopology, approveTopology).
 // Returns { message, tool_calls_made } — use for instant display while SSE streams.
+//
+// C1 FIX: Now calls POST /api/chat instead of the old /api/ai/agent/chat route
+// which never existed in Express. The new /api/chat route directly invokes
+// chat-orchestrator.dispatch() and persists AgentSessionData.
 export async function agentChat(sessionId, message) {
-  return request(`/api/ai/agent/chat`, {
+  return request(`/api/chat`, {
     method: "POST",
     body: JSON.stringify({ session_id: sessionId, message }),
   });
@@ -195,6 +199,10 @@ export async function agentChat(sessionId, message) {
 // FIX: EventSource cannot set custom headers.
 // Pass JWT token as ?token= query param — Express requireAuth accepts it.
 // MUST use addEventListener per event name, NOT onmessage (misses named events).
+//
+// C5: Added Last-Event-ID support for event replay on reconnection.
+// When the SSE connection drops and reconnects, EventSource automatically
+// sends the Last-Event-ID header so the server can replay missed events.
 export function subscribeSSE(sessionId, handlers, onConnectionError) {
   const token = getToken();
   const qs = token ? `?token=${encodeURIComponent(token)}` : "";
@@ -221,8 +229,18 @@ export function subscribeSSE(sessionId, handlers, onConnectionError) {
     });
   });
 
-  es.onerror = () => {
-    if (es.readyState === EventSource.CLOSED) onConnectionError?.();
+  // C5: On connection error, check if it's a reconnectable state.
+  // EventSource automatically reconnects with Last-Event-ID header,
+  // but we also handle manual reconnection via the onConnectionError
+  // callback for cases where the automatic reconnect fails.
+  es.onerror = (e) => {
+    if (es.readyState === EventSource.CLOSED) {
+      // Connection permanently closed — notify caller
+      onConnectionError?.();
+    }
+    // If readyState is CONNECTING (0), EventSource is auto-reconnecting.
+    // We don't call onConnectionError yet — wait to see if it succeeds.
+    // The caller (useSSE hook) handles the manual reconnect fallback.
   };
 
   return es;

@@ -11,6 +11,7 @@ transient-error retry logic, and LLM JSON extraction across the entire pipeline.
 import json
 import logging
 import os
+import random
 import re
 import time
 from typing import Optional
@@ -28,6 +29,10 @@ load_dotenv()
 
 logger = logging.getLogger("structranet.llm_utils")
 
+# Per-call timeout (seconds) — controls how long each individual API request
+# may take before raising APITimeoutError.  Override via LLM_CALL_TIMEOUT env var.
+_LLM_CALL_TIMEOUT = float(os.getenv("LLM_CALL_TIMEOUT", "120"))
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Lazy singleton OpenAI client
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -40,6 +45,8 @@ def _get_client() -> OpenAI:
 
     Reads ROUTER_API_KEY and ROUTER_BASE_URL from environment variables.
     Raises ValueError if the API key is missing.
+
+    The per-request timeout defaults to the LLM_CALL_TIMEOUT env var (120s).
     """
     global _client
     if _client is None:
@@ -47,7 +54,7 @@ def _get_client() -> OpenAI:
         base_url = os.getenv("ROUTER_BASE_URL")
         if not key:
             raise ValueError("ROUTER_API_KEY missing. Check your .env file.")
-        _client = OpenAI(base_url=base_url, api_key=key, timeout=500.0)
+        _client = OpenAI(base_url=base_url, api_key=key, timeout=_LLM_CALL_TIMEOUT)
     return _client
 
 
@@ -55,10 +62,19 @@ def _get_client() -> OpenAI:
 #  Retry wrapper for transient API errors
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _call_with_retry(func, max_retries: int = 2):
+# Rate-limit (429) errors get extra retries compared to other transient errors.
+_RATE_LIMIT_MAX_RETRIES = 4
+
+
+def _call_with_retry(func, max_retries: int = 3, call_timeout: Optional[float] = None):
     """Call *func* and retry on transient OpenAI errors.
 
-    Exponential back-off: 2^attempt seconds between retries.
+    Exponential back-off with jitter: ``(2 ** attempt) + random.uniform(0, 1)``
+    seconds between retries.
+
+    Rate-limit (429) errors receive up to 4 retries and attempt to respect the
+    ``Retry-After`` header when present.
+
     Raises the last exception if all retries are exhausted.
 
     Parameters
@@ -66,19 +82,81 @@ def _call_with_retry(func, max_retries: int = 2):
     func : callable
         A zero-argument callable that performs the OpenAI API call.
     max_retries : int
-        Maximum number of attempts (default 2 = one initial + one retry).
+        Maximum number of attempts for non-rate-limit errors (default 3 =
+        one initial call + two retries).
+    call_timeout : float or None
+        Per-call timeout in seconds.  If provided, the OpenAI client's
+        timeout is temporarily set to this value for the duration of the call.
+        Defaults to the ``LLM_CALL_TIMEOUT`` env var (120 s).
     """
-    for attempt in range(1, max_retries + 1):
+    effective_timeout = call_timeout if call_timeout is not None else _LLM_CALL_TIMEOUT
+    client = _get_client()
+
+    # Loop long enough to cover whichever error type needs the most attempts.
+    total_attempts = max(max_retries, _RATE_LIMIT_MAX_RETRIES)
+
+    for attempt in range(1, total_attempts + 1):
         try:
-            return func()
-        except (APITimeoutError, APIConnectionError, RateLimitError, InternalServerError) as e:
+            # Temporarily override the client timeout for this call only.
+            original_timeout = client.timeout
+            client.timeout = effective_timeout
+            try:
+                return func()
+            finally:
+                client.timeout = original_timeout
+
+        except APITimeoutError as e:
             if attempt < max_retries:
-                wait = 2 ** attempt
-                logger.warning("Transient API error (attempt %d/%d): %s — retry in %ds",
-                               attempt, max_retries, type(e).__name__, wait)
+                wait = (2 ** attempt) + random.uniform(0, 1)
+                logger.warning(
+                    "API timeout (attempt %d/%d, timeout=%.1fs) — retry in %.1fs",
+                    attempt, max_retries, effective_timeout, wait,
+                )
+                time.sleep(wait)
+            else:
+                logger.error(
+                    "API timeout exhausted after %d attempts (timeout=%.1fs)",
+                    max_retries, effective_timeout,
+                )
+                raise
+
+        except RateLimitError as e:
+            # 429 errors allow more retries and try to honour Retry-After.
+            retry_after = None
+            if hasattr(e, "response") and e.response is not None:
+                retry_after_str = e.response.headers.get("retry-after")
+                if retry_after_str:
+                    try:
+                        retry_after = float(retry_after_str)
+                    except (ValueError, TypeError):
+                        pass
+
+            if attempt < _RATE_LIMIT_MAX_RETRIES:
+                wait = retry_after if retry_after is not None else (2 ** attempt) + random.uniform(0, 1)
+                hint = f"Retry-After: {retry_after}s" if retry_after is not None else "no Retry-After header"
+                logger.warning(
+                    "Rate limit hit (429, attempt %d/%d, %s) — retry in %.1fs",
+                    attempt, _RATE_LIMIT_MAX_RETRIES, hint, wait,
+                )
+                time.sleep(wait)
+            else:
+                logger.error(
+                    "Rate limit (429) exhausted after %d attempts",
+                    _RATE_LIMIT_MAX_RETRIES,
+                )
+                raise
+
+        except (APIConnectionError, InternalServerError) as e:
+            if attempt < max_retries:
+                wait = (2 ** attempt) + random.uniform(0, 1)
+                logger.warning(
+                    "Transient API error (attempt %d/%d): %s — retry in %.1fs",
+                    attempt, max_retries, type(e).__name__, wait,
+                )
                 time.sleep(wait)
             else:
                 raise
+
     return None
 
 

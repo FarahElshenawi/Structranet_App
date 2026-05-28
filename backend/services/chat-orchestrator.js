@@ -897,15 +897,6 @@ async function dispatch(userMessage, session, store) {
 
 // ─── Exports ────────────────────────────────────────────────────────────────
 
-module.exports = {
-  dispatch,
-  AgentSessionData,
-  AgentResponse,
-  // Expose internals for unit testing
-  _buildSystemPrompt,
-  _executeToolCall,
-};
-
 export {
   dispatch,
   AgentSessionData,

@@ -669,3 +669,45 @@ app.listen(port, () => {
   console.log(`💬 POST /api/chat — chat-orchestrator endpoint active`);
   console.log(`📡 SSE /api/ai/sessions/:id/events — real-time streaming active`);
 });
+
+
+// Add this route — frontend agentChat() calls /api/ai/agent/chat
+app.post("/api/ai/agent/chat", requireAuth, async (req, res) => {
+  try {
+    const { session_id, message } = req.body;
+    if (!message?.trim()) return res.status(400).json({ error: "message is required" });
+
+    const sessionId = session_id;
+    if (!sessionId) return res.status(400).json({ error: "session_id is required" });
+
+    let agentData = await SessionStore.get(sessionId);
+    if (!agentData) agentData = new AgentSessionData();
+
+    const user = await User.findById(req.userId).select("gns3Profile").catch(() => null);
+    const session = {
+      sessionId,
+      _id: sessionId,
+      userId: req.userId,
+      profile: user?.gns3Profile ? JSON.stringify({
+        version: user.gns3Profile.version || "",
+        features: user.gns3Profile.features || {},
+        images: user.gns3Profile.images instanceof Map
+          ? Object.fromEntries(user.gns3Profile.images)
+          : (user.gns3Profile.images || {}),
+        security_profile: user.gns3Profile.security_profile || "none",
+      }) : "{}",
+      outputDir: process.env.OUTPUT_DIR || "/tmp/structuranet",
+    };
+
+    try { const { mkdirSync } = await import("fs"); mkdirSync(session.outputDir, { recursive: true }); } catch {}
+
+    session._agentData = agentData;
+    const result = await dispatch(message.trim(), session, SSEManager);
+    await SessionStore.set(sessionId, session._agentData);
+
+    res.json({ session_id: sessionId, message: result.message, tool_calls_made: result.toolCallsMade });
+  } catch (err) {
+    console.error("[/api/ai/agent/chat] Error:", err);
+    res.status(500).json({ error: "Chat processing failed", detail: err.message });
+  }
+});

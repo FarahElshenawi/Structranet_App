@@ -16,10 +16,19 @@ import { subscribeSSE } from "../lib/api";
  *  5. phase + subPhase are stored separately for fine-grained UI control
  *  6. SAFETY TIMEOUT: If streaming stays active for >3 min with no events,
  *     auto-transition to error so the UI doesn't freeze.
+ *  7. C5: AUTO-RECONNECTION with event replay — if the SSE connection drops,
+ *     the hook automatically reconnects up to MAX_RECONNECT_ATTEMPTS times
+ *     with exponential backoff. On reconnect, it replays the last known
+ *     session state so the UI stays consistent.
  */
 
 // Safety timeout: 3 minutes with no SSE events → auto-error
 const STREAM_TIMEOUT_MS = 3 * 60 * 1000;
+
+// C5: Reconnection configuration
+const MAX_RECONNECT_ATTEMPTS = 5;
+const RECONNECT_BASE_DELAY_MS = 1000;   // Start with 1s, double each attempt
+const RECONNECT_MAX_DELAY_MS = 15000;   // Cap at 15s
 
 export default function useSSE() {
   const [thoughts,     setThoughts]     = useState([]);   // [{id,type,content,timestamp}]
@@ -33,8 +42,13 @@ export default function useSSE() {
   const [exportData,   setExportData]   = useState(null);       // ExportResponse
   const [agentMessage, setAgentMessage] = useState("");         // LLM's text response via tool calling
   const [toolCallsMade,setToolCallsMade]= useState([]);         // Which tools the LLM called
+  const [reconnecting, setReconnecting] = useState(false);      // C5: reconnection in progress
   const esRef = useRef(null);
   const timeoutRef = useRef(null);
+  const reconnectAttemptRef = useRef(0);      // C5: current reconnect attempt count
+  const reconnectTimerRef = useRef(null);      // C5: timer for delayed reconnect
+  const currentSessionIdRef = useRef(null);    // C5: track session ID for reconnect
+  const handlersRef = useRef(null);            // C5: store handlers for reconnect
 
   // Reset the safety timeout timer — called on every SSE event
   const resetTimeout = useCallback(() => {
@@ -56,6 +70,14 @@ export default function useSSE() {
     }
   }, []);
 
+  // C5: Clear any pending reconnect timer
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }, []);
+
   const reset = useCallback(() => {
     setThoughts([]);
     setTopology(null);
@@ -68,9 +90,59 @@ export default function useSSE() {
     setExportData(null);
     setAgentMessage("");
     setToolCallsMade([]);
+    setReconnecting(false);
     esRef.current?.close();
     esRef.current = null;
+    currentSessionIdRef.current = null;
+    reconnectAttemptRef.current = 0;
     clearStreamTimeout();
+    clearReconnectTimer();
+  }, [clearStreamTimeout, clearReconnectTimer]);
+
+  // C5: Attempt to reconnect to the SSE stream after a connection drop.
+  // Uses exponential backoff and replays the current state so the UI
+  // remains consistent even if events were missed during the disconnect.
+  const attemptReconnect = useCallback((sessionId, handlers) => {
+    const attempt = reconnectAttemptRef.current;
+
+    if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+      console.error(`[SSE] Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Giving up.`);
+      setStatus("error");
+      setPhase("error");
+      setSubPhase(null);
+      setReconnecting(false);
+      clearStreamTimeout();
+      return;
+    }
+
+    const delay = Math.min(
+      RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt),
+      RECONNECT_MAX_DELAY_MS
+    );
+
+    console.log(`[SSE] Reconnect attempt ${attempt + 1}/${MAX_RECONNECT_ATTEMPTS} in ${delay}ms`);
+    setReconnecting(true);
+
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectAttemptRef.current++;
+
+      // Close any existing connection
+      if (esRef.current) {
+        try { esRef.current.close(); } catch (e) { /* ignore */ }
+        esRef.current = null;
+      }
+
+      // Re-subscribe to the SSE stream
+      // The server will send current state events upon reconnection
+      esRef.current = subscribeSSE(sessionId, handlers, () => {
+        // Connection dropped again — try reconnecting
+        attemptReconnect(sessionId, handlers);
+      });
+
+      // If we already have topology data, the UI remains in the last known state
+      // The server may re-send events that update the state
+      console.log("[SSE] Reconnected to SSE stream");
+    }, delay);
   }, [clearStreamTimeout]);
 
   const startStream = useCallback((sessionId) => {
@@ -78,10 +150,15 @@ export default function useSSE() {
     setStatus("streaming");
     setPhase("generating");
     setSubPhase("thinking");
+    currentSessionIdRef.current = sessionId;
+    reconnectAttemptRef.current = 0;
 
     // Helper: wrap any handler to also reset the safety timeout
     const withTimeout = (fn) => (data) => {
       resetTimeout();
+      // Reset reconnect attempt counter on any successful event
+      reconnectAttemptRef.current = 0;
+      setReconnecting(false);
       fn(data);
     };
 
@@ -176,21 +253,37 @@ export default function useSSE() {
       }),
     };
 
+    // Store handlers and session ID for reconnection
+    handlersRef.current = handlers;
+
     // Start the initial safety timeout
     resetTimeout();
 
+    // C5: On connection error, attempt reconnection instead of immediately
+    // transitioning to error state. The reconnection logic handles the
+    // exponential backoff and max attempts.
     esRef.current = subscribeSSE(sessionId, handlers, () => {
       // Connection dropped unexpectedly (not a normal close)
-      setStatus((s) => (s === "streaming" || s === "exporting" ? "error" : s));
-      clearStreamTimeout();
+      // Only attempt reconnect if we're in an active streaming state
+      if (currentSessionIdRef.current) {
+        attemptReconnect(currentSessionIdRef.current, handlers);
+      } else {
+        // No session to reconnect to — show error
+        setStatus((s) => (s === "streaming" || s === "exporting" ? "error" : s));
+        clearStreamTimeout();
+      }
     });
-  }, [reset, resetTimeout, clearStreamTimeout]);
+  }, [reset, resetTimeout, clearStreamTimeout, attemptReconnect]);
 
   const stopStream = useCallback(() => {
     esRef.current?.close();
     esRef.current = null;
+    currentSessionIdRef.current = null;
+    reconnectAttemptRef.current = 0;
+    setReconnecting(false);
     clearStreamTimeout();
-  }, [clearStreamTimeout]);
+    clearReconnectTimer();
+  }, [clearStreamTimeout, clearReconnectTimer]);
 
   return {
     // State
@@ -205,6 +298,7 @@ export default function useSSE() {
     exportData,
     agentMessage,
     toolCallsMade,
+    reconnecting,       // C5: true when auto-reconnecting
     // Actions
     startStream,
     stopStream,

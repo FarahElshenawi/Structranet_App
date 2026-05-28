@@ -4,6 +4,7 @@ import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
 import ChatPage from "./pages/ChatPage";
+import { ChatErrorBoundary } from "./components/ErrorBoundary";
 
 const BORDER = "#E5E7EB";
 const PRIMARY = "#166534";
@@ -92,9 +93,13 @@ function AppContent() {
   const { user } = useAuth();
   const [page, setPage] = useState("landing"); // landing | login | register | chat
 
-  // Authenticated → Chat
+  // Authenticated → Chat (wrapped in its own error boundary)
   if (user) {
-    return <ChatPage />;
+    return (
+      <ChatErrorBoundary>
+        <ChatPage />
+      </ChatErrorBoundary>
+    );
   }
 
   // Not authenticated → Landing / Login / Register

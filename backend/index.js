@@ -14,7 +14,6 @@ dotenv.config();
 
 const port = process.env.PORT || 3000;
 const app = express();
-const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 
 // ─── C6: Restrict CORS to frontend domain in production ──────────────────────
 // In production, only allow the configured frontend origin.
@@ -632,27 +631,6 @@ app.put("/api/profile", requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: "Failed" }); }
 });
 
-/* ═══════════════════════════════════════════════════════════════════════
-   APPLIANCE CATALOG — Kept as proxy to FastAPI
-   (FastAPI may be deployed separately for the catalog service)
-   ═══════════════════════════════════════════════════════════════════════ */
-
-app.get("/api/catalog", requireAuth, async (req, res) => {
-  try {
-    const catalogRes = await fetch(`${FASTAPI_URL}/catalog`, {
-      headers: { authorization: req.headers.authorization },
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!catalogRes.ok) {
-      return res.status(catalogRes.status).json({ error: `Catalog fetch failed: ${catalogRes.status}` });
-    }
-    const data = await catalogRes.json();
-    res.json(data);
-  } catch (e) {
-    console.error("Catalog proxy error:", e.message);
-    res.status(502).json({ error: "AI engine unavailable for catalog", detail: e.message });
-  }
-});
 
 /* ═══════════════════════════════════════════════════════════════════════
    HEALTH CHECK

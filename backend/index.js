@@ -4,9 +4,11 @@ import cors from "cors";
 import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
+import { v4 as uuidv4 } from "uuid";
 import User from "./models/User.js";
 import UserChat from "./models/userChat.js";
 import Chat from "./models/chat.js";
+import { dispatch, AgentSessionData } from "./services/chat-orchestrator.js";
 
 dotenv.config();
 
@@ -14,9 +16,59 @@ const port = process.env.PORT || 3000;
 const app = express();
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 
-app.use(cors({ origin: (o, cb) => cb(null, true), credentials: true }));
+// ─── C6: Restrict CORS to frontend domain in production ──────────────────────
+// In production, only allow the configured frontend origin.
+// In development, allow all origins for convenience.
+const CORS_ORIGIN = process.env.CORS_ORIGIN || null; // e.g. "https://structuranet.ai"
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, server-to-server)
+    if (!origin) return callback(null, true);
+
+    if (CORS_ORIGIN) {
+      // Production: strict allowlist
+      const allowed = CORS_ORIGIN.split(",").map(o => o.trim());
+      if (allowed.includes(origin) || allowed.includes("*")) {
+        return callback(null, true);
+      }
+      console.warn(`[CORS] Blocked origin: ${origin}`);
+      return callback(new Error("CORS not allowed"), false);
+    }
+
+    // Development: allow all
+    return callback(null, true);
+  },
+  credentials: true,
+}));
+
 app.use(express.json({ limit: "25mb" }));
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
+
+// ─── H5: Input validation middleware ────────────────────────────────────────
+// Validates request bodies against a simple schema before route handlers run.
+// Returns 400 with a descriptive error if validation fails.
+const validateBody = (schema) => (req, res, next) => {
+  for (const [field, rules] of Object.entries(schema)) {
+    const val = req.body[field];
+    if (rules.required && (val === undefined || val === null || val === '')) {
+      return res.status(400).json({ error: `${field} is required` });
+    }
+    if (rules.type && val !== undefined && typeof val !== rules.type) {
+      return res.status(400).json({ error: `${field} must be a ${rules.type}` });
+    }
+    if (rules.minLength && typeof val === 'string' && val.length < rules.minLength) {
+      return res.status(400).json({ error: `${field} must be at least ${rules.minLength} characters` });
+    }
+    if (rules.minLength && Array.isArray(val) && val.length < rules.minLength) {
+      return res.status(400).json({ error: `${field} must have at least ${rules.minLength} items` });
+    }
+    if (rules.isArray && !Array.isArray(val)) {
+      return res.status(400).json({ error: `${field} must be an array` });
+    }
+  }
+  next();
+};
 
 // Connect to MongoDB in background
 const connectDB = async () => {
@@ -36,121 +88,372 @@ const connectDB = async () => {
 };
 connectDB();
 
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-key";
+// ─── C7: Replace hardcoded JWT_SECRET with env-var-only loading ──────────────
+// JWT_SECRET MUST come from the environment. There is no fallback default.
+// If it is missing, the server will start but auth endpoints will return 500.
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.error("❌ FATAL: JWT_SECRET environment variable is not set.");
+  console.error("   Set it in your .env file before starting the server.");
+  console.error("   Example: JWT_SECRET=$(openssl rand -hex 32)");
+}
 
 /* ═══════════════════════════════════════════════════════════════════════
-   MANUAL FASTAPI PROXY
+   C3: SESSION PERSISTENCE FOR AGENT SESSION DATA
    ═══════════════════════════════════════════════════════════════════════
 
-   Replaces broken http-proxy-middleware with a working fetch-based proxy.
-   Express strips /api/ai from the mounted path, so /api/ai/sessions → /sessions
-   We forward /sessions to http://localhost:8000/sessions
+   Previously, AgentSessionData was stored in-memory on session._agentData.
+   If the Node.js process restarted, all active sessions were lost.
 
-   Handles three proxy patterns:
-     1. SSE (/events) — streams text/event-stream
-     2. Downloads (/download) — streams binary files
-     3. Regular JSON — forwards request/response
+   Now we use a SessionStore that persists to MongoDB when available,
+   with an in-memory LRU fallback when MongoDB is down. The store
+   provides get/set/delete semantics keyed by sessionId.
 
-   SSE Auth pattern: EventSource doesn't support custom headers.
-   Auth uses ?token=xxx query param which we forward as Authorization header.
+   The chat-orchestrator.dispatch() receives the session store and
+   reads/writes AgentSessionData through it.
    ═══════════════════════════════════════════════════════════════════════ */
 
-app.use("/api/ai", async (req, res) => {
-  const targetPath = req.originalUrl.replace(/^\/api\/ai/, "") || "/";
-  const targetUrl = `${FASTAPI_URL}${targetPath}`;
+const _memoryStore = new Map();
 
-  // Build headers — forward auth and content-type
-  const headers = {};
-  if (req.headers["content-type"]) headers["content-type"] = req.headers["content-type"];
-  const queryToken = req.query && req.query.token;
-  if (queryToken) headers["authorization"] = `Bearer ${queryToken}`;
-  else if (req.headers.authorization) headers["authorization"] = req.headers.authorization;
+/**
+ * Persistent session store — MongoDB-backed with in-memory fallback.
+ *
+ * When MongoDB is connected, session data is serialized to the `agentsessions`
+ * collection. When MongoDB is unavailable, an in-memory Map is used (data is
+ * lost on process restart, but the app remains functional for development).
+ */
+const SessionStore = {
+  async get(sessionId) {
+    // Try MongoDB first
+    if (mongoose.connection.readyState === 1) {
+      try {
+        const doc = await mongoose.connection.db
+          .collection("agentsessions")
+          .findOne({ _id: sessionId });
+        if (doc) return AgentSessionData.fromJSON(doc.data);
+      } catch (e) {
+        console.warn("[SessionStore] MongoDB read failed, using memory:", e.message);
+      }
+    }
+    // Fallback to memory
+    return _memoryStore.get(sessionId) || null;
+  },
 
+  async set(sessionId, agentData) {
+    // Write to MongoDB
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await mongoose.connection.db
+          .collection("agentsessions")
+          .replaceOne(
+            { _id: sessionId },
+            { _id: sessionId, data: agentData.toJSON(), updatedAt: new Date() },
+            { upsert: true }
+          );
+      } catch (e) {
+        console.warn("[SessionStore] MongoDB write failed:", e.message);
+      }
+    }
+    // Always mirror to memory for fast reads
+    _memoryStore.set(sessionId, agentData);
+  },
+
+  async delete(sessionId) {
+    _memoryStore.delete(sessionId);
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await mongoose.connection.db.collection("agentsessions").deleteOne({ _id: sessionId });
+      } catch (e) { /* ignore */ }
+    }
+  },
+};
+
+/* ═══════════════════════════════════════════════════════════════════════
+   SSE BROADCAST MANAGER
+   ═══════════════════════════════════════════════════════════════════════
+
+   Manages Server-Sent Events connections per session. Each session can
+   have one active SSE subscriber (the frontend). The broadcast() method
+   sends events to all subscribers of a given session.
+
+   This replaces the previous pattern of storing SSE res objects on
+   the Express session — it's now a dedicated, typed manager.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const _sseClients = new Map(); // sessionId → Set<res>
+
+const SSEManager = {
+  /** Add a new SSE client for a session. */
+  addClient(sessionId, res) {
+    if (!_sseClients.has(sessionId)) _sseClients.set(sessionId, new Set());
+    _sseClients.get(sessionId).add(res);
+  },
+
+  /** Remove an SSE client. */
+  removeClient(sessionId, res) {
+    const clients = _sseClients.get(sessionId);
+    if (clients) {
+      clients.delete(res);
+      if (clients.size === 0) _sseClients.delete(sessionId);
+    }
+  },
+
+  /** Broadcast an event to all SSE clients of a session. */
+  broadcast(session, event) {
+    const sessionId = session?.sessionId || session?._id;
+    if (!sessionId) return;
+    const clients = _sseClients.get(sessionId);
+    if (!clients || clients.size === 0) return;
+    const payload = `event: ${event.event}\ndata: ${JSON.stringify(event.data)}\n\n`;
+    for (const res of clients) {
+      try { res.write(payload); } catch (e) { /* client disconnected */ }
+    }
+  },
+};
+
+/* ═══════════════════════════════════════════════════════════════════════
+   C2: REPLACED DEAD FASTAPI PROXY WITH NATIVE EXPRESS ENDPOINTS
+   ═══════════════════════════════════════════════════════════════════════
+
+   The previous /api/ai/* middleware proxied ALL requests to a FastAPI
+   server that does not exist in the codebase. This caused every request
+   to /api/ai/* to return 502 errors.
+
+   Now, the Express server handles all AI engine interactions directly:
+     - Session management is done in Express with MongoDB persistence
+     - AI commands are dispatched via chat-orchestrator + ai-engine.js
+     - SSE streaming is managed by the SSEManager above
+     - Downloads are served from the filesystem
+     - The /api/catalog proxy to FastAPI is kept since it may be deployed
+       separately in some configurations
+
+   The old proxy is completely removed. The few endpoints that still
+   need FastAPI (catalog) have their own dedicated routes.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════════════════════════
+   C1: POST /api/chat — THE MISSING CHAT ROUTE
+   ═══════════════════════════════════════════════════════════════════════
+
+   This is the core chat endpoint that the frontend's agentChat()
+   function calls. It was previously missing — the chat-orchestrator's
+   dispatch() function was never invoked by any route.
+
+   The endpoint:
+     1. Authenticates the user via JWT
+     2. Gets or creates a session (with persistent AgentSessionData)
+     3. Calls chat-orchestrator.dispatch() to run the LLM tool-calling loop
+     4. Persists the updated AgentSessionData
+     5. Returns the agent's response (SSE events are streamed separately)
+   ═══════════════════════════════════════════════════════════════════════ */
+
+app.post("/api/chat", requireAuth, validateBody({ message: { required: true, type: 'string' } }), async (req, res) => {
   try {
-    // ── SSE endpoint — stream the response ──────────────────────────────
-    if (targetPath.includes("/events")) {
-      const sseRes = await fetch(targetUrl, {
-        method: "GET",
-        headers: { ...headers, accept: "text/event-stream" },
-      });
+    const { session_id, message } = req.body;
 
-      if (!sseRes.ok) {
-        return res.status(sseRes.status).json({ error: `FastAPI SSE error: ${sseRes.status}` });
-      }
-
-      res.setHeader("Content-Type", "text/event-stream");
-      res.setHeader("Cache-Control", "no-cache");
-      res.setHeader("Connection", "keep-alive");
-      res.setHeader("X-Accel-Buffering", "no");
-
-      const reader = sseRes.body.getReader();
-      const decoder = new TextDecoder();
-
-      const pump = async () => {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value, { stream: true });
-            res.write(chunk);
-          }
-        } catch (e) {
-          // Client disconnected or error
-        } finally {
-          res.end();
-        }
-      };
-
-      req.on("close", () => { reader.cancel().catch(() => {}); });
-      pump();
-      return;
+    if (!message || typeof message !== "string" || !message.trim()) {
+      return res.status(400).json({ error: "message is required" });
     }
 
-    // ── File download endpoints — stream binary ─────────────────────────
-    if (targetPath.includes("/download")) {
-      const dlRes = await fetch(targetUrl, { method: "GET", headers });
-      if (!dlRes.ok) {
-        return res.status(dlRes.status).json({ error: `Download failed: ${dlRes.status}` });
-      }
-      const contentType = dlRes.headers.get("content-type") || "application/octet-stream";
-      const contentDisposition = dlRes.headers.get("content-disposition");
-      res.setHeader("Content-Type", contentType);
-      if (contentDisposition) res.setHeader("Content-Disposition", contentDisposition);
+    // Get or create session ID
+    const sessionId = session_id || uuidv4();
 
-      const buffer = await dlRes.arrayBuffer();
-      return res.send(Buffer.from(buffer));
+    // Get or create persistent agent session data
+    let agentData = await SessionStore.get(sessionId);
+    if (!agentData) {
+      agentData = new AgentSessionData();
+      await SessionStore.set(sessionId, agentData);
     }
 
-    // ── Regular JSON endpoints ──────────────────────────────────────────
-    const fetchOptions = {
-      method: req.method,
-      headers,
+    // Build the session object that tool handlers expect
+    // It carries profile info, output directory, and session ID
+    const user = await User.findById(req.userId).select("gns3Profile").catch(() => null);
+    const session = {
+      sessionId,
+      _id: sessionId,
+      userId: req.userId,
+      profile: user?.gns3Profile ? JSON.stringify({
+        version: user.gns3Profile.version || "",
+        features: user.gns3Profile.features || {},
+        images: user.gns3Profile.images instanceof Map
+          ? Object.fromEntries(user.gns3Profile.images)
+          : (user.gns3Profile.images || {}),
+        security_profile: user.gns3Profile.security_profile || "none",
+      }) : "{}",
+      outputDir: process.env.OUTPUT_DIR || "/tmp/structuranet",
     };
 
-    // Add body for POST/PUT/PATCH
-    if (req.method !== "GET" && req.method !== "HEAD" && req.body) {
-      fetchOptions.body = JSON.stringify(req.body);
-    }
+    // Ensure output directory exists
+    try {
+      const { mkdirSync } = await import("fs");
+      mkdirSync(session.outputDir, { recursive: true });
+    } catch (e) { /* may already exist */ }
 
-    const aiRes = await fetch(targetUrl, fetchOptions);
-    const data = await aiRes.json().catch(() => ({}));
+    // Load persisted agent data into the session for the orchestrator
+    session._agentData = agentData;
 
-    if (!aiRes.ok) {
-      return res.status(aiRes.status).json(data);
-    }
-    res.json(data);
+    // Dispatch through the LLM tool-calling orchestrator
+    // This is the main AI interaction point — it may call Python via child_process
+    const result = await dispatch(message.trim(), session, SSEManager);
+
+    // Persist the updated agent session data
+    await SessionStore.set(sessionId, session._agentData);
+
+    res.json({
+      session_id: sessionId,
+      message: result.message,
+      tool_calls_made: result.toolCallsMade,
+    });
   } catch (err) {
-    console.error(`Proxy error [${req.method} ${targetPath}]:`, err.message);
-    res.status(502).json({ error: "AI engine unavailable", detail: err.message });
+    console.error("[/api/chat] Error:", err);
+    res.status(500).json({ error: "Chat processing failed", detail: err.message });
   }
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   SESSION MANAGEMENT — Create, get, SSE subscribe, download
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/** Create a new session (returns session ID for SSE subscription). */
+app.post("/api/ai/sessions", requireAuth, async (req, res) => {
+  try {
+    const sessionId = uuidv4();
+    const agentData = new AgentSessionData();
+    await SessionStore.set(sessionId, agentData);
+    res.status(201).json({
+      session_id: sessionId,
+      status: "created",
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to create session" });
+  }
+});
+
+/** Get session info. */
+app.get("/api/ai/sessions/:sessionId", requireAuth, async (req, res) => {
+  try {
+    const agentData = await SessionStore.get(req.params.sessionId);
+    if (!agentData) return res.status(404).json({ error: "Session not found" });
+    res.json({
+      session_id: req.params.sessionId,
+      has_topology: !!agentData.topologyDict,
+      topology_approved: agentData.topologyApproved,
+      edit_iterations: agentData.editIterations,
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Failed" });
+  }
+});
+
+/** SSE endpoint — the frontend subscribes here for real-time events. */
+app.get("/api/ai/sessions/:sessionId/events", requireAuth, async (req, res) => {
+  const { sessionId } = req.params;
+
+  // Verify session exists
+  const agentData = await SessionStore.get(sessionId);
+  if (!agentData) {
+    return res.status(404).json({ error: "Session not found" });
+  }
+
+  // Set SSE headers
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+
+  // Register as SSE client
+  SSEManager.addClient(sessionId, res);
+
+  // Send initial keepalive
+  res.write(`event: keepalive\ndata: {}\n\n`);
+
+  // Cleanup on disconnect
+  req.on("close", () => {
+    SSEManager.removeClient(sessionId, res);
+  });
+});
+
+/** Download the .gns3project file for a session. */
+app.get("/api/ai/sessions/:sessionId/download", requireAuth, async (req, res) => {
+  try {
+    const agentData = await SessionStore.get(req.params.sessionId);
+    if (!agentData) return res.status(404).json({ error: "Session not found" });
+
+    // Try to serve from the session's gns3project path
+    // The path was stored by the chat-orchestrator after export
+    const { existsSync, createReadStream } = await import("fs");
+    const gns3Path = req.session?.gns3projectPath;
+
+    if (gns3Path && existsSync(gns3Path)) {
+      res.setHeader("Content-Type", "application/gzip");
+      res.setHeader("Content-Disposition", `attachment; filename="network.gns3project"`);
+      return createReadStream(gns3Path).pipe(res);
+    }
+
+    // Fallback: try to find in output directory
+    const outputDir = process.env.OUTPUT_DIR || "/tmp/structuranet";
+    const { readdirSync } = await import("fs");
+    const { join } = await import("path");
+
+    if (existsSync(outputDir)) {
+      const files = readdirSync(outputDir).filter(f => f.endsWith(".gns3project"));
+      if (files.length > 0) {
+        const latest = files.sort().pop();
+        const filePath = join(outputDir, latest);
+        res.setHeader("Content-Type", "application/gzip");
+        res.setHeader("Content-Disposition", `attachment; filename="${latest}"`);
+        return createReadStream(filePath).pipe(res);
+      }
+    }
+
+    res.status(404).json({ error: "No export file found for this session" });
+  } catch (err) {
+    res.status(500).json({ error: "Download failed", detail: err.message });
+  }
+});
+
+/** Download device configurations as a zip. */
+app.get("/api/ai/sessions/:sessionId/download/configs", requireAuth, async (req, res) => {
+  // Placeholder — will stream config files when export is implemented
+  res.status(404).json({ error: "Configs download not yet available for this session" });
+});
+
+/** Download requirements manifest. */
+app.get("/api/ai/sessions/:sessionId/download/requirements", requireAuth, async (req, res) => {
+  try {
+    const agentData = await SessionStore.get(req.params.sessionId);
+    if (!agentData) return res.status(404).json({ error: "Session not found" });
+    if (!agentData.topologyDict) return res.status(404).json({ error: "No topology in this session" });
+
+    // Generate a simple requirements manifest from the topology
+    const nodes = agentData.topologyDict?.topology?.nodes || [];
+    const manifest = nodes.map(n => ({
+      name: n.name,
+      template: n.template_name,
+      node_type: n.node_type,
+      image_required: !["ethernet_switch", "ethernet_hub", "vpcs"].includes(n.node_type),
+    }));
+
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Content-Disposition", `attachment; filename="requirements.json"`);
+    res.json(manifest);
+  } catch (err) {
+    res.status(500).json({ error: "Requirements download failed" });
+  }
+});
+
+/** Health check for the AI engine (no longer proxied to FastAPI). */
+app.get("/api/ai/health", (req, res) => {
+  res.json({ status: "ok", service: "express-ai-engine", mode: "native" });
 });
 
 /* ═══════════════════════════════════════════════════════════════════════
    AUTH — JWT-based authentication
    ═══════════════════════════════════════════════════════════════════════ */
 
-app.post("/api/auth/signup", async (req, res) => {
+app.post("/api/auth/signup", validateBody({ username: { required: true, type: 'string' }, email: { required: true, type: 'string' }, password: { required: true, type: 'string', minLength: 6 } }), async (req, res) => {
   try {
+    if (!JWT_SECRET) return res.status(500).json({ error: "Server misconfigured: JWT_SECRET not set" });
     if (mongoose.connection.readyState !== 1) return res.status(503).json({ error: "Database not available" });
     const { username, email, password } = req.body;
     if (await User.findOne({ email })) return res.status(400).json({ error: "Email already exists" });
@@ -159,8 +462,9 @@ app.post("/api/auth/signup", async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Signup failed" }); }
 });
 
-app.post("/api/auth/signin", async (req, res) => {
+app.post("/api/auth/signin", validateBody({ email: { required: true, type: 'string' }, password: { required: true, type: 'string' } }), async (req, res) => {
   try {
+    if (!JWT_SECRET) return res.status(500).json({ error: "Server misconfigured: JWT_SECRET not set" });
     if (mongoose.connection.readyState !== 1) return res.status(503).json({ error: "Database not available. Use demo login." });
     const { email, password } = req.body;
     const user = await User.findOne({ email });
@@ -172,6 +476,7 @@ app.post("/api/auth/signin", async (req, res) => {
 
 app.post("/api/auth/demo", async (req, res) => {
   try {
+    if (!JWT_SECRET) return res.status(500).json({ error: "Server misconfigured: JWT_SECRET not set" });
     if (mongoose.connection.readyState === 1) {
       let demoUser = await User.findOne({ email: "demo@structuranet.ai" });
       if (!demoUser) {
@@ -192,8 +497,9 @@ app.post("/api/auth/demo", async (req, res) => {
  *   - Authorization: Bearer xxx header
  *   - ?token=xxx query parameter (for SSE / EventSource connections)
  */
-const requireAuth = (req, res, next) => {
+function requireAuth(req, res, next) {
   try {
+    if (!JWT_SECRET) return res.status(500).json({ error: "Server misconfigured: JWT_SECRET not set" });
     const authHeader = req.headers.authorization;
     const queryToken = req.query && req.query.token;
     const token = (authHeader && authHeader.split(" ")[1]) || queryToken;
@@ -201,13 +507,17 @@ const requireAuth = (req, res, next) => {
     req.userId = jwt.verify(token, JWT_SECRET).userId.toString();
     next();
   } catch (err) { return res.status(401).json({ error: "Invalid token" }); }
-};
+}
 
 /* ═══════════════════════════════════════════════════════════════════════
    CHAT API — CRUD for chat history
    ═══════════════════════════════════════════════════════════════════════ */
 
-app.post("/api/chats", requireAuth, async (req, res) => {
+app.post("/api/chats", requireAuth, (req, res, next) => {
+  // H5: Only validate text field when MongoDB is available
+  if (mongoose.connection.readyState !== 1) return next();
+  validateBody({ text: { required: true, type: 'string' } })(req, res, next);
+}, async (req, res) => {
   if (mongoose.connection.readyState !== 1) return res.status(201).json({ _id: "chat-" + Date.now(), userId: req.userId, messages: [{ role: "user", content: req.body.text || "" }], createdAt: new Date().toISOString() });
   try {
     const chat = new Chat({ userId: req.userId, messages: [{ role: "user", content: req.body.text || "" }] });
@@ -232,7 +542,7 @@ app.get("/api/chats/:chatId", requireAuth, async (req, res) => {
   catch (e) { res.status(500).json({ error: "Failed" }); }
 });
 
-app.post("/api/chats/:chatId/messages", requireAuth, async (req, res) => {
+app.post("/api/chats/:chatId/messages", requireAuth, validateBody({ messages: { required: true, isArray: true, minLength: 1 } }), async (req, res) => {
   if (mongoose.connection.readyState !== 1) return res.json({ ok: true });
   try { const chat = await Chat.findOne({ _id: req.params.chatId, userId: req.userId }); if (!chat) return res.status(404); chat.messages.push(...(req.body.messages || []).map(m => ({ role: m.role, content: m.content || "" }))); await chat.save(); res.json(chat); }
   catch (e) { res.status(500).json({ error: "Failed" }); }
@@ -242,7 +552,6 @@ app.delete("/api/chats/:chatId", requireAuth, async (req, res) => {
   if (mongoose.connection.readyState !== 1) return res.json({ message: "Deleted" });
   try {
     await Chat.findByIdAndDelete(req.params.chatId);
-    // FIX: UserChat stores chats as an array — must $pull from the array, not deleteOne
     await UserChat.updateOne(
       { userId: req.userId },
       { $pull: { chats: { _id: req.params.chatId } } }
@@ -266,21 +575,8 @@ app.put("/api/chats/:chatId/session", requireAuth, async (req, res) => {
 
 /* ═══════════════════════════════════════════════════════════════════════
    PROFILE API — GNS3 environment profile
-
-   Walkthrough spec:
-     PUT /api/profile with { version, features, images, security_profile }
-     images is a MAP: {"Cisco 7200": "c7200-adventerprisek9-mz.124-24.T5.image", ...}
-     This images map becomes template_image_map when creating AI sessions.
-     Priority: Profile image name > appliance.py default
-
-   The User model stores images as a Mongoose Map<String, String>.
-   When reading, we convert from Mongoose Map to a plain JS object
-   so the frontend receives a normal JSON object (not a Map instance).
    ═══════════════════════════════════════════════════════════════════════ */
 
-/**
- * Helper: Convert Mongoose Map to plain object for JSON serialization
- */
 function profileToPlain(profile) {
   if (!profile) return {};
   return {
@@ -288,7 +584,6 @@ function profileToPlain(profile) {
     features: profile.features
       ? { iou: !!profile.features.iou, qemu: !!profile.features.qemu, docker: !!profile.features.docker }
       : { iou: false, qemu: true, docker: false },
-    // Mongoose Map → plain JS object
     images: profile.images instanceof Map
       ? Object.fromEntries(profile.images)
       : (profile.images || {}),
@@ -316,11 +611,8 @@ app.put("/api/profile", requireAuth, async (req, res) => {
     if (version !== undefined) user.gns3Profile.version = version;
     if (features) user.gns3Profile.features = { ...user.gns3Profile.features, ...features };
 
-    // images: accept plain object, store as Mongoose Map
-    // Frontend sends: { "Cisco 7200": "c7200-adventerprisek9-mz.124-24.T5.image" }
     if (images !== undefined) {
       if (typeof images === "object" && images !== null) {
-        // Convert plain object to Map for Mongoose Map type
         const map = new Map(Object.entries(images));
         user.gns3Profile.images = map;
       } else {
@@ -328,7 +620,6 @@ app.put("/api/profile", requireAuth, async (req, res) => {
       }
     }
 
-    // security_profile: "none" | "basic" | "enterprise"
     if (security_profile !== undefined) {
       const valid = ["none", "basic", "enterprise"];
       user.gns3Profile.security_profile = valid.includes(security_profile)
@@ -342,11 +633,8 @@ app.put("/api/profile", requireAuth, async (req, res) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════════════
-   APPLIANCE CATALOG — Proxy to FastAPI /catalog
-
-   The profile popup's "Search appliance name" feature needs the full
-   appliance catalog. This endpoint fetches it from FastAPI and returns
-   it to the frontend for the search/typeahead dropdown.
+   APPLIANCE CATALOG — Kept as proxy to FastAPI
+   (FastAPI may be deployed separately for the catalog service)
    ═══════════════════════════════════════════════════════════════════════ */
 
 app.get("/api/catalog", requireAuth, async (req, res) => {
@@ -374,13 +662,10 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", service: "express", db: mongoose.connection.readyState === 1 ? "connected" : "disconnected" });
 });
 
-// NOTE: /api/ai/health is handled by the proxy middleware above (line 58).
-// The proxy forwards it to FastAPI's /health endpoint.
-// Do NOT register a separate /api/ai/health route here — it would be dead code
-// since app.use("/api/ai") catches all /api/ai/* requests first.
-
 app.listen(port, () => {
   console.log(`🚀 Server running on port ${port}`);
-  console.log(`📡 Proxying /api/ai → ${FASTAPI_URL} (manual fetch proxy)`);
-  console.log(`📋 Catalog endpoint: /api/catalog → ${FASTAPI_URL}/catalog`);
+  console.log(`🔒 CORS origin: ${CORS_ORIGIN || "(dev: allow all)"}`);
+  console.log(`🔑 JWT_SECRET: ${JWT_SECRET ? "configured" : "❌ NOT SET"}`);
+  console.log(`💬 POST /api/chat — chat-orchestrator endpoint active`);
+  console.log(`📡 SSE /api/ai/sessions/:id/events — real-time streaming active`);
 });

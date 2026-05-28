@@ -105,7 +105,7 @@ const MAX_HISTORY_TURNS = 30;
  * These come from environment variables so they can be changed
  * without modifying code. Defaults point to OpenRouter's free tier.
  */
-const LLM_MODEL = process.env.AI_MODEL || "openai/gpt-oss-120b:free";
+const LLM_MODEL = process.env.AI_MODEL || "z-ai/glm-4.5-air:free";
 const LLM_MAX_TOKENS = parseInt(process.env.AI_MAX_TOKENS || "4096", 10);
 
 
@@ -565,8 +565,8 @@ async function _toolApplySecurityAndExport(securityProfile, session, store, data
     // ConfigStream component.
     if (store && store.broadcast && result.config_texts) {
       for (const [deviceName, configText] of Object.entries(result.config_texts)) {
-        // Send in 6-character chunks for smooth streaming effect
-        const CHUNK_SIZE = 6;
+        // Send in 80-character chunks for smooth streaming effect
+        const CHUNK_SIZE = 80; // H3: Increased from 6 to 80 for better streaming throughput
         for (let i = 0; i < configText.length; i += CHUNK_SIZE) {
           store.broadcast(session, {
             event: "config_text",
@@ -739,8 +739,8 @@ async function _executeToolCall(toolName, toolArgs, session, store, data) {
 async function dispatch(userMessage, session, store) {
   // ── Get or initialize agent session data ────────────────────────────
   // The AgentSessionData object persists across conversation turns.
-  // It's stored on the Express session object so it survives between
-  // HTTP requests (as long as the session cookie is valid).
+  // It's loaded from the persistent SessionStore (MongoDB-backed) by
+  // the /api/chat route handler and placed on session._agentData.
   let data;
   if (session._agentData && session._agentData instanceof AgentSessionData) {
     data = session._agentData;
@@ -904,4 +904,12 @@ module.exports = {
   // Expose internals for unit testing
   _buildSystemPrompt,
   _executeToolCall,
+};
+
+export {
+  dispatch,
+  AgentSessionData,
+  AgentResponse,
+  _buildSystemPrompt,
+  _executeToolCall
 };

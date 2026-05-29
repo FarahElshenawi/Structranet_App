@@ -270,9 +270,6 @@ export const downloadConfigsZip = (sid, name = "network") =>
 export const downloadRequirements = (sid, name = "network") =>
   downloadBlob(`/api/ai/sessions/${sid}/download/requirements`, `${name}_requirements.json`);
 
-export const downloadAnsible = (sid, name = "network") =>
-  downloadBlob(`/api/ai/sessions/${sid}/download/ansible`, `${name}_ansible.zip`);
-
 // ─── Health ───────────────────────────────────────────────────────────────────
 export async function checkBackendHealth() {
   try {

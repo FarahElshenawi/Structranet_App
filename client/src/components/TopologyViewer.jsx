@@ -228,6 +228,26 @@ const nodeColors = {
   docker:  { fill: "rgba(99,102,241,0.08)", stroke: "rgba(99,102,241,0.45)", text: "#4338CA" },
 };
 
+// Security zone color palette (deterministic by zone name)
+const ZONE_COLORS = [
+  { bg: "rgba(234,88,12,0.08)", border: "rgba(234,88,12,0.35)", text: "#C2410C" },
+  { bg: "rgba(59,130,246,0.08)", border: "rgba(59,130,246,0.35)", text: "#1D4ED8" },
+  { bg: "rgba(99,102,241,0.08)", border: "rgba(99,102,241,0.35)", text: "#4338CA" },
+  { bg: "rgba(22,101,52,0.08)", border: "rgba(22,101,52,0.35)", text: "#166534" },
+  { bg: "rgba(219,39,119,0.08)", border: "rgba(219,39,119,0.35)", text: "#9D174D" },
+  { bg: "rgba(120,53,15,0.08)", border: "rgba(120,53,15,0.35)", text: "#78350F" },
+];
+
+function zoneColor(zoneName, index) {
+  // Simple deterministic color assignment
+  let hash = 0;
+  for (let i = 0; i < zoneName.length; i++) {
+    hash = zoneName.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const idx = index != null ? index : Math.abs(hash) % ZONE_COLORS.length;
+  return ZONE_COLORS[idx % ZONE_COLORS.length];
+}
+
 export default function TopologyViewer({ topology, requirements, onClose }) {
   const [selected, setSelected] = useState(null);
   const [zoom, setZoom] = useState(1);
@@ -236,9 +256,9 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
   const containerRef = useRef(null);
 
-  // ViewBox dimensions (internal coordinate system)
-  const VB_W = 1200;
-  const VB_H = 800;
+  // ViewBox dimensions (internal coordinate system) — 840x660 per walkthrough spec
+  const VB_W = 840;
+  const VB_H = 660;
 
   const nodes = topology?.nodes || [];
   const links = topology?.links || [];
@@ -258,6 +278,55 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
     }
     return map;
   }, [requirements]);
+
+  // ── Security Zones ──────────────────────────────────────────────
+  // Extract security zones from topology data.
+  // Zones can come from topology.security_zones array, or inferred
+  // from node.security_zone / node.zone properties.
+  const securityZones = useMemo(() => {
+    const zones = {};
+
+    // From explicit topology.security_zones array
+    if (topology?.security_zones && Array.isArray(topology.security_zones)) {
+      for (const z of topology.security_zones) {
+        const name = typeof z === "string" ? z : z.name;
+        if (!zones[name]) {
+          zones[name] = { name, nodeIds: [], ...(typeof z === "object" ? z : {}) };
+        }
+      }
+    }
+
+    // From node-level security_zone / zone property
+    for (const n of nodes) {
+      const zoneName = n.security_zone || n.zone || null;
+      if (zoneName) {
+        if (!zones[zoneName]) {
+          zones[zoneName] = { name: zoneName, nodeIds: [] };
+        }
+        zones[zoneName].nodeIds.push(n.node_id);
+      }
+    }
+
+    return Object.values(zones);
+  }, [topology, nodes]);
+
+  // Lookup: node_id → zone name
+  const nodeZoneMap = useMemo(() => {
+    const map = {};
+    for (const zone of securityZones) {
+      for (const nid of zone.nodeIds) {
+        map[nid] = zone.name;
+      }
+    }
+    // Also check node.security_zone directly
+    for (const n of nodes) {
+      const z = n.security_zone || n.zone;
+      if (z && !map[n.node_id]) {
+        map[n.node_id] = z;
+      }
+    }
+    return map;
+  }, [securityZones, nodes]);
 
   // Find the selected node
   const selectedNode = selected ? nodes.find((n) => n.node_id === selected) : null;
@@ -281,12 +350,7 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
     return fromId === selected || toId === selected;
   };
 
-  // Zoom controls
-  const handleZoomIn = () => setZoom((z) => Math.min(z + 0.2, 3));
-  const handleZoomOut = () => setZoom((z) => Math.max(z - 0.2, 0.4));
-  const handleZoomReset = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
-
-  // Mouse wheel zoom
+  // Mouse wheel zoom (kept — no visible controls, but scroll-wheel zoom still works)
   const handleWheel = useCallback((e) => {
     e.preventDefault();
     const delta = e.deltaY > 0 ? -0.08 : 0.08;
@@ -326,6 +390,16 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
       default:         return { w: 68, h: 38 };
     }
   };
+
+  // Count nodes by type for the overview panel
+  const typeCounts = useMemo(() => {
+    const counts = {};
+    for (const n of nodes) {
+      const t = displayType(n);
+      counts[t] = (counts[t] || 0) + 1;
+    }
+    return counts;
+  }, [nodes]);
 
   return (
     <div
@@ -453,6 +527,54 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
                 </filter>
               </defs>
               <rect width="100%" height="100%" fill="url(#grid)" />
+
+              {/* ── Security Zone overlays ──────────────────────────────────── */}
+              {securityZones.map((zone, zi) => {
+                const zoneNodes = zone.nodeIds
+                  .map((nid) => nodes.find((n) => n.node_id === nid))
+                  .filter(Boolean);
+                if (zoneNodes.length === 0) return null;
+
+                // Compute bounding box of zone nodes
+                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                for (const zn of zoneNodes) {
+                  const pos = getPos(zn.node_id);
+                  const dims = nodeDims(zn);
+                  minX = Math.min(minX, pos.x - dims.w / 2);
+                  minY = Math.min(minY, pos.y - dims.h / 2);
+                  maxX = Math.max(maxX, pos.x + dims.w / 2);
+                  maxY = Math.max(maxY, pos.y + dims.h / 2 + 18); // account for label
+                }
+                const pad = 20;
+                const zc = zoneColor(zone.name, zi);
+
+                return (
+                  <g key={`zone-${zi}`}>
+                    <rect
+                      x={minX - pad}
+                      y={minY - pad}
+                      width={maxX - minX + pad * 2}
+                      height={maxY - minY + pad * 2}
+                      rx={10}
+                      fill={zc.bg}
+                      stroke={zc.border}
+                      strokeWidth={1}
+                      strokeDasharray="6 3"
+                    />
+                    <text
+                      x={minX - pad + 8}
+                      y={minY - pad + 14}
+                      fontSize="10"
+                      fontWeight="600"
+                      fill={zc.text}
+                      fontFamily="monospace"
+                      letterSpacing="0.06em"
+                    >
+                      {zone.name.toUpperCase()}
+                    </text>
+                  </g>
+                );
+              })}
 
               {/* ── Links ──────────────────────────────────────────────────────── */}
               {links.map((l, i) => {
@@ -628,10 +750,10 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
           </div>
         </div>
 
-        {/* ── Inspection Panel (always visible, 280px) ──────────────────────── */}
+        {/* ── Inspection Panel (240px) ─────────────────────────────────────── */}
         <div
           style={{
-            width: 280,
+            width: 240,
             borderLeft: `1px solid ${BORDER}`,
             background: "white",
             overflowY: "auto",
@@ -641,17 +763,19 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
           }}
         >
           {selectedNode ? (
-            <div style={{ padding: 20, flex: 1 }}>
+            <div style={{ padding: 16, flex: 1 }}>
               {/* Selected node header */}
               <div
                 style={{
                   display: "flex",
                   justifyContent: "space-between",
                   alignItems: "center",
-                  marginBottom: 20,
+                  marginBottom: 16,
                 }}
               >
-                <span style={{ fontWeight: 700, fontSize: 18, color: "#111" }}>{selectedNode.name}</span>
+                <span style={{ fontWeight: 700, fontSize: 16, color: "#111", lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 180 }}>
+                  {selectedNode.name}
+                </span>
                 <button
                   onClick={() => setSelected(null)}
                   style={{
@@ -661,6 +785,7 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
                     color: "#9CA3AF",
                     padding: 4,
                     display: "flex",
+                    flexShrink: 0,
                   }}
                 >
                   <Icon d={PATHS.x} size={16} />
@@ -668,7 +793,7 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
               </div>
 
               {/* Node details */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 16, fontSize: 13 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 14, fontSize: 13 }}>
                 {/* Type chip */}
                 <div>
                   <div style={{ color: "#9CA3AF", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 6, textTransform: "uppercase" }}>
@@ -689,13 +814,42 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
                   </span>
                 </div>
 
+                {/* Security Zone */}
+                {(selectedNode.security_zone || selectedNode.zone || nodeZoneMap[selectedNode.node_id]) && (
+                  <div>
+                    <div style={{ color: "#9CA3AF", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 6, textTransform: "uppercase" }}>
+                      Security Zone
+                    </div>
+                    {(() => {
+                      const zoneName = selectedNode.security_zone || selectedNode.zone || nodeZoneMap[selectedNode.node_id];
+                      const zoneIdx = securityZones.findIndex((z) => z.name === zoneName);
+                      const zc = zoneColor(zoneName, zoneIdx >= 0 ? zoneIdx : undefined);
+                      return (
+                        <span style={{
+                          display: "inline-block",
+                          background: zc.bg,
+                          border: `1px solid ${zc.border}`,
+                          borderRadius: 6,
+                          padding: "4px 10px",
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: zc.text,
+                          fontFamily: "monospace",
+                        }}>
+                          {zoneName}
+                        </span>
+                      );
+                    })()}
+                  </div>
+                )}
+
                 {/* Template */}
                 {selectedNode.template_name && (
                   <div>
                     <div style={{ color: "#9CA3AF", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 4, textTransform: "uppercase" }}>
                       Template
                     </div>
-                    <div style={{ fontSize: 13, color: "#111", fontFamily: "monospace", wordBreak: "break-all" }}>
+                    <div style={{ fontSize: 12, color: "#111", fontFamily: "monospace", wordBreak: "break-all" }}>
                       {selectedNode.template_name}
                     </div>
                   </div>
@@ -707,7 +861,7 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
                     <div style={{ color: "#9CA3AF", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 4, textTransform: "uppercase" }}>
                       Node Type
                     </div>
-                    <div style={{ fontSize: 13, color: "#111", fontFamily: "monospace" }}>
+                    <div style={{ fontSize: 12, color: "#111", fontFamily: "monospace" }}>
                       {selectedNode.node_type}
                     </div>
                   </div>
@@ -721,7 +875,7 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
                     </div>
                     {selectedReq.image_file ? (
                       <div style={{
-                        fontSize: 12,
+                        fontSize: 11,
                         color: "#166534",
                         fontFamily: "monospace",
                         wordBreak: "break-all",
@@ -734,7 +888,7 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
                       </div>
                     ) : (
                       <div style={{
-                        fontSize: 12,
+                        fontSize: 11,
                         color: "#DC2626",
                         fontFamily: "monospace",
                         background: "#FEF2F2",
@@ -745,7 +899,7 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
                         Missing — configure in profile
                       </div>
                     )}
-                    <div style={{ fontSize: 11, color: "#9CA3AF", marginTop: 4 }}>
+                    <div style={{ fontSize: 10, color: "#9CA3AF", marginTop: 4 }}>
                       Source: {selectedReq.image_file ? "Profile / Appliance defaults" : "Not configured"}
                     </div>
                   </div>
@@ -757,7 +911,7 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
                     <div style={{ color: "#9CA3AF", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 4, textTransform: "uppercase" }}>
                       Image Required
                     </div>
-                    <div style={{ fontSize: 13, color: "#6B7280" }}>
+                    <div style={{ fontSize: 12, color: "#6B7280" }}>
                       No — built-in node type
                     </div>
                   </div>
@@ -768,7 +922,7 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
                   <div style={{ color: "#9CA3AF", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 4, textTransform: "uppercase" }}>
                     Node ID
                   </div>
-                  <div style={{ fontSize: 13, color: "#111", fontFamily: "monospace" }}>
+                  <div style={{ fontSize: 12, color: "#111", fontFamily: "monospace", wordBreak: "break-all" }}>
                     {selectedNode.node_id}
                   </div>
                 </div>
@@ -779,7 +933,7 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
                     <div style={{ color: "#9CA3AF", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 4, textTransform: "uppercase" }}>
                       Links
                     </div>
-                    <div style={{ fontSize: 13, color: "#111", fontFamily: "monospace" }}>
+                    <div style={{ fontSize: 12, color: "#111", fontFamily: "monospace" }}>
                       {selectedNode.link_count}
                     </div>
                   </div>
@@ -798,8 +952,8 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
                           style={{
                             background: MUTED,
                             borderRadius: 6,
-                            padding: "6px 10px",
-                            fontSize: 12,
+                            padding: "5px 8px",
+                            fontSize: 11,
                             fontFamily: "monospace",
                             color: PRIMARY,
                             fontWeight: 500,
@@ -818,88 +972,102 @@ export default function TopologyViewer({ topology, requirements, onClose }) {
               flex: 1,
               display: "flex",
               flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: 24,
-              textAlign: "center",
+              padding: 16,
             }}>
+              {/* Top: hint to select a node */}
               <div style={{
-                width: 48, height: 48, borderRadius: 12,
-                background: "rgba(22,101,52,0.06)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                color: "#9CA3AF", marginBottom: 12,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                textAlign: "center",
+                marginBottom: 20,
+                paddingTop: 16,
               }}>
-                <Icon d={PATHS.search} size={22} />
+                <div style={{
+                  width: 40, height: 40, borderRadius: 10,
+                  background: "rgba(22,101,52,0.06)",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  color: "#9CA3AF", marginBottom: 10,
+                }}>
+                  <Icon d={PATHS.search} size={20} />
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#6B7280", marginBottom: 4 }}>
+                  Select a node
+                </div>
+                <div style={{ fontSize: 11, color: "#9CA3AF", lineHeight: 1.5 }}>
+                  Click any node to view details, image requirements, and connections.
+                </div>
               </div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: "#6B7280", marginBottom: 4 }}>
-                Select a node
+
+              {/* Topology overview stats */}
+              <div style={{
+                borderTop: `1px solid ${BORDER}`,
+                paddingTop: 14,
+                marginBottom: 14,
+              }}>
+                <div style={{ color: "#9CA3AF", fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", marginBottom: 10, textTransform: "uppercase" }}>
+                  Topology Overview
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                    <span style={{ color: "#6B7280" }}>Nodes</span>
+                    <span style={{ fontWeight: 600, fontFamily: "monospace" }}>{nodes.length}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                    <span style={{ color: "#6B7280" }}>Links</span>
+                    <span style={{ fontWeight: 600, fontFamily: "monospace" }}>{links.length}</span>
+                  </div>
+                  {Object.entries(typeCounts).map(([type, count]) => (
+                    <div key={type} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                      <span style={{ color: "#6B7280" }}>{type.charAt(0).toUpperCase() + type.slice(1)}s</span>
+                      <span style={{ fontWeight: 600, fontFamily: "monospace", color: (nodeColors[type] || nodeColors.host).text }}>{count}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <div style={{ fontSize: 12, color: "#9CA3AF", lineHeight: 1.5 }}>
-                Click on any node in the topology to view its details, image requirements, and connections.
-              </div>
+
+              {/* Security Zones section */}
+              {securityZones.length > 0 && (
+                <div style={{
+                  borderTop: `1px solid ${BORDER}`,
+                  paddingTop: 14,
+                }}>
+                  <div style={{ color: "#9CA3AF", fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", marginBottom: 10, textTransform: "uppercase" }}>
+                    Security Zones
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {securityZones.map((zone, zi) => {
+                      const zc = zoneColor(zone.name, zi);
+                      const zoneNodeCount = zone.nodeIds.length;
+                      return (
+                        <div
+                          key={zone.name}
+                          style={{
+                            background: zc.bg,
+                            border: `1px solid ${zc.border}`,
+                            borderRadius: 6,
+                            padding: "6px 10px",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                          }}
+                        >
+                          <span style={{ fontSize: 12, fontWeight: 600, color: zc.text, fontFamily: "monospace" }}>
+                            {zone.name}
+                          </span>
+                          <span style={{ fontSize: 10, color: zc.text, opacity: 0.7 }}>
+                            {zoneNodeCount} {zoneNodeCount === 1 ? "node" : "nodes"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
-          {/* Bottom: Zoom controls */}
-          <div style={{
-            borderTop: `1px solid ${BORDER}`,
-            padding: "10px 16px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            background: "white",
-            flexShrink: 0,
-          }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <button
-                onClick={handleZoomOut}
-                style={{
-                  border: `1px solid ${BORDER}`,
-                  background: "white",
-                  borderRadius: 6,
-                  width: 30, height: 30,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  cursor: "pointer", color: "#374151", fontSize: 16, fontWeight: 600,
-                }}
-              >
-                -
-              </button>
-              <span style={{ fontSize: 12, fontWeight: 500, color: "#6B7280", minWidth: 40, textAlign: "center" }}>
-                {Math.round(zoom * 100)}%
-              </span>
-              <button
-                onClick={handleZoomIn}
-                style={{
-                  border: `1px solid ${BORDER}`,
-                  background: "white",
-                  borderRadius: 6,
-                  width: 30, height: 30,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  cursor: "pointer", color: "#374151", fontSize: 16, fontWeight: 600,
-                }}
-              >
-                +
-              </button>
-              <button
-                onClick={handleZoomReset}
-                style={{
-                  border: `1px solid ${BORDER}`,
-                  background: "white",
-                  borderRadius: 6,
-                  padding: "4px 10px",
-                  fontSize: 11,
-                  color: "#6B7280",
-                  cursor: "pointer",
-                  fontWeight: 500,
-                }}
-              >
-                Reset
-              </button>
-            </div>
-            <div style={{ fontSize: 10, color: "#9CA3AF" }}>
-              Scroll to zoom
-            </div>
-          </div>
+          {/* NO zoom controls — walkthrough spec: "NO edit/zoom controls in viewer" */}
         </div>
       </div>
 

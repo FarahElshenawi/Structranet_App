@@ -21,3 +21,4 @@ env/
 ai-engine/.env
 client/.env
 backend/.env
+ai-engine/structuranet_test/

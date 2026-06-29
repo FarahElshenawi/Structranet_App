@@ -213,6 +213,7 @@ export function subscribeSSE(sessionId, handlers, onConnectionError) {
     "phase_change", "thought", "topology_ready", "requirements_ready",
     "summary_ready", "phase2_progress", "export_progress", "config_text",
     "agent_message", "complete", "error", "keepalive",
+    "token_delta", "tool_start",
   ];
 
   EVENTS.forEach((name) => {

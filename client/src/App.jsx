@@ -1,130 +1,64 @@
-import { useState, Component } from "react";
-import { AuthProvider, useAuth } from "./context/AuthContext";
-import LandingPage from "./pages/LandingPage";
-import LoginPage from "./pages/LoginPage";
-import RegisterPage from "./pages/RegisterPage";
-import ChatPage from "./pages/ChatPage";
-import { ChatErrorBoundary } from "./components/ErrorBoundary";
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { useEffect } from 'react';
+import { useAuthStore } from './stores/authStore.js';
+import { useChatStore } from './stores/chatStore.js';
 
-const BORDER = "#E5E7EB";
-const PRIMARY = "#166534";
+import LandingPage from './pages/LandingPage.jsx';
+import LoginPage from './pages/LoginPage.jsx';
+import RegisterPage from './pages/RegisterPage.jsx';
+import ChatPage from './pages/ChatPage.jsx';
+import OnboardingModal from './components/auth/OnboardingModal.jsx';
 
-// ── Error Boundary: catches render crashes and shows a recoverable UI ──
-class ErrorBoundary extends Component {
-  constructor(props) {
-    super(props);
-    this.state = { hasError: false, error: null };
+function ProtectedRoute({ children }) {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const location = useLocation();
+  if (!isAuthenticated) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
   }
-
-  static getDerivedStateFromError(error) {
-    return { hasError: true, error };
-  }
-
-  componentDidCatch(error, errorInfo) {
-    console.error("[ErrorBoundary] React render error:", error, errorInfo);
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div
-          style={{
-            height: "100vh",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "#F9FAFB",
-            fontFamily: "'Geist', system-ui, sans-serif",
-            gap: 16,
-            padding: 24,
-          }}
-        >
-          <div style={{ fontSize: 44, marginBottom: 8 }}>⚠️</div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: "#111", margin: 0 }}>
-            Something went wrong
-          </h1>
-          <p style={{ fontSize: 14, color: "#6B7280", maxWidth: 480, textAlign: "center", lineHeight: 1.6, margin: 0 }}>
-            The application encountered an unexpected error. This has been logged to the console for debugging.
-          </p>
-          <code
-            style={{
-              fontSize: 12,
-              fontFamily: "monospace",
-              color: "#DC2626",
-              background: "#FEF2F2",
-              padding: "8px 14px",
-              borderRadius: 6,
-              border: "1px solid #FECACA",
-              maxWidth: 480,
-              wordBreak: "break-all",
-              textAlign: "center",
-            }}
-          >
-            {this.state.error?.message || "Unknown error"}
-          </code>
-          <button
-            onClick={() => {
-              this.setState({ hasError: false, error: null });
-              window.location.reload();
-            }}
-            style={{
-              marginTop: 8,
-              padding: "10px 24px",
-              border: "none",
-              background: PRIMARY,
-              color: "white",
-              borderRadius: 8,
-              fontSize: 14,
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
-          >
-            Reload Application
-          </button>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-function AppContent() {
-  const { user } = useAuth();
-  const [page, setPage] = useState("landing"); // landing | login | register | chat
-
-  // Authenticated → Chat (wrapped in its own error boundary)
-  if (user) {
-    return (
-      <ChatErrorBoundary>
-        <ChatPage />
-      </ChatErrorBoundary>
-    );
-  }
-
-  // Not authenticated → Landing / Login / Register
-  if (page === "login") {
-    return <LoginPage onSwitchToRegister={() => setPage("register")} onBack={() => setPage("landing")} />;
-  }
-
-  if (page === "register") {
-    return <RegisterPage onSwitchToLogin={() => setPage("login")} onBack={() => setPage("landing")} />;
-  }
-
-  return (
-    <LandingPage
-      onLogin={() => setPage("login")}
-      onSignup={() => setPage("register")}
-    />
-  );
+  return children;
 }
 
 export default function App() {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const accessToken = useAuthStore((s) => s.accessToken);
+  const fetchMe = useAuthStore((s) => s.fetchMe);
+  const fetchProfile = useAuthStore((s) => s.fetchProfile);
+  const loadSessions = useChatStore((s) => s.loadSessions);
+  const profile = useAuthStore((s) => s.profile);
+
+  // On mount: if we have a token but no user, fetch /me
+  useEffect(() => {
+    if (accessToken && !isAuthenticated) {
+      fetchMe().then((ok) => {
+        if (ok) fetchProfile();
+      });
+    } else if (isAuthenticated) {
+      fetchProfile();
+      loadSessions();
+    }
+  }, []); // eslint-disable-line
+
   return (
-    <ErrorBoundary>
-      <AuthProvider>
-        <AppContent />
-      </AuthProvider>
-    </ErrorBoundary>
+    <>
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+        <Route
+          path="/chat"
+          element={
+            <ProtectedRoute>
+              <ChatPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+
+      {/* Show onboarding modal after login if user hasn't calibrated GNS3 */}
+      {isAuthenticated && profile && !profile.isCalibrated && (
+        <OnboardingModal />
+      )}
+    </>
   );
 }

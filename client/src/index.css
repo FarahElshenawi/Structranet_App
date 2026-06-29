@@ -1,0 +1,126 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply bg-zinc-950 text-zinc-100 font-sans antialiased;
+    margin: 0;
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+  }
+  * {
+    box-sizing: border-box;
+  }
+  ::selection {
+    @apply bg-brand-500/30 text-white;
+  }
+}
+
+@layer components {
+  /* ── Buttons ───────────────────────────────── */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-zinc-950 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-emerald-600 text-white hover:bg-emerald-500 focus:ring-emerald-500 shadow-sm hover:shadow-md hover:shadow-emerald-500/20 active:scale-[0.98];
+  }
+  .btn-secondary {
+    @apply btn bg-zinc-800 text-zinc-100 border border-zinc-700 hover:border-emerald-500/50 hover:text-emerald-400 focus:ring-emerald-500;
+  }
+  .btn-ghost {
+    @apply btn text-zinc-400 hover:bg-zinc-800 hover:text-white;
+  }
+
+  /* ── Cards ─────────────────────────────────── */
+  .card {
+    @apply rounded-2xl border border-zinc-800 bg-zinc-900 shadow-lg shadow-black/20;
+  }
+  .card-elevated {
+    @apply rounded-2xl border border-zinc-700/60 bg-zinc-900/80 backdrop-blur-sm shadow-xl shadow-black/30;
+  }
+
+  /* ── Badges ────────────────────────────────── */
+  .badge { @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium; }
+  .badge-brand { @apply badge bg-emerald-500/10 text-emerald-400 border border-emerald-500/30; }
+  .badge-success { @apply badge bg-emerald-500/10 text-emerald-400 border border-emerald-500/30; }
+  .badge-neutral { @apply badge bg-zinc-800 text-zinc-300 border border-zinc-700; }
+  .badge-warning { @apply badge bg-amber-500/10 text-amber-400 border border-amber-500/30; }
+  .badge-danger { @apply badge bg-red-500/10 text-red-400 border border-red-500/30; }
+
+  /* ── Forms ─────────────────────────────────── */
+  .input {
+    @apply w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3.5 py-2.5 text-sm text-white placeholder-zinc-500 transition-colors focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30;
+  }
+
+  /* ── Text utilities ────────────────────────── */
+  .text-gradient-brand {
+    @apply bg-gradient-to-r from-emerald-400 via-emerald-500 to-emerald-400 bg-clip-text text-transparent;
+  }
+}
+
+/* ── Scrollbar (zinc dark) ─────────────────────── */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: #18181b; }
+::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: #52525b; }
+
+/* ═══════════════════════════════════════════════════════════
+   PULSING EMERALD STREAMING CURSOR
+   Used at the end of streaming text (token_delta) — animated
+   emerald block that pulses softly while the LLM is generating.
+   ═══════════════════════════════════════════════════════════ */
+.streaming-cursor::after {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 18px;
+  margin-left: 3px;
+  vertical-align: text-bottom;
+  background: linear-gradient(to bottom, #34d399, #10b981);
+  border-radius: 1px;
+  animation: pulseEmerald 1.2s ease-in-out infinite;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+}
+
+@keyframes pulseEmerald {
+  0%, 100% { opacity: 1; transform: scaleY(1); }
+  50% { opacity: 0.4; transform: scaleY(0.85); }
+}
+
+/* ── Prose (Tailwind Typography) overrides for chat ──
+   Used inside <div class="prose prose-invert"> wrappers.
+   Tuned for the dark zinc theme + emerald accents. */
+.prose pre {
+  @apply bg-zinc-950 border border-zinc-800;
+}
+.prose code::before,
+.prose code::after {
+  content: none; /* remove the backticks typography adds */
+}
+.prose code {
+  @apply text-emerald-400 bg-zinc-800 px-1.5 py-0.5 rounded font-mono text-[14px];
+}
+.prose pre code {
+  @apply bg-transparent p-0 text-zinc-100 text-[13px];
+}
+.prose a {
+  @apply text-emerald-400 no-underline hover:underline;
+}
+.prose strong {
+  @apply text-white;
+}
+.prose blockquote {
+  @apply border-emerald-500/50 text-zinc-300;
+}
+.prose th {
+  @apply bg-zinc-800 text-white;
+}
+.prose thead th {
+  @apply border-zinc-700;
+}
+.prose td, .prose th {
+  @apply border-zinc-700;
+}

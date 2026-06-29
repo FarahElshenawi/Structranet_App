@@ -41,6 +41,7 @@ export default function useSSE() {
   const [status,       setStatus]       = useState("idle");     // idle|streaming|review|exporting|complete|error
   const [exportData,   setExportData]   = useState(null);       // ExportResponse
   const [agentMessage, setAgentMessage] = useState("");         // LLM's text response via tool calling
+  const [streamingText, setStreamingText] = useState("");       // Live token-by-token text from LLM streaming
   const [toolCallsMade,setToolCallsMade]= useState([]);         // Which tools the LLM called
   const [reconnecting, setReconnecting] = useState(false);      // C5: reconnection in progress
   const esRef = useRef(null);
@@ -89,6 +90,7 @@ export default function useSSE() {
     setStatus("idle");
     setExportData(null);
     setAgentMessage("");
+    setStreamingText("");
     setToolCallsMade([]);
     setReconnecting(false);
     esRef.current?.close();
@@ -242,9 +244,23 @@ export default function useSSE() {
         console.error("[SSE] pipeline error:", message);
       }),
 
+      // { token } — single token from LLM streaming (arrives in real-time)
+      token_delta: withTimeout(({ token }) => {
+        setStreamingText((prev) => prev + (token || ""));
+      }),
+
+      // { tool, round } — LLM decided to call a tool (streaming transition)
+      tool_start: withTimeout(({ tool }) => {
+        // Tool is starting — keep streamingText visible, user sees the narration
+        // that led to the tool call. The phase_change handler will update the phase.
+      }),
+
       // { message, tool_calls_made } — LLM's final text response after tool calling
       agent_message: withTimeout(({ message, tool_calls_made }) => {
-        if (message) setAgentMessage(message);
+        if (message) {
+          setAgentMessage(message);
+          setStreamingText(""); // Clear streaming text — final message replaces it
+        }
         if (tool_calls_made?.length) setToolCallsMade(tool_calls_made);
       }),
 
@@ -297,6 +313,7 @@ export default function useSSE() {
     status,
     exportData,
     agentMessage,
+    streamingText,      // Live token-by-token text from LLM
     toolCallsMade,
     reconnecting,       // C5: true when auto-reconnecting
     // Actions

@@ -88,12 +88,34 @@ def _ok(data: Any) -> None:
     """
     Print a JSON result to stdout for Node.js to parse.
 
-    Uses indent=2 for human-readable output during debugging.
-    In production, you may want to remove indent for smaller payloads.
-    The `default=str` fallback serializes types like datetime that aren't
-    natively JSON-serializable.
+    Uses the RESULT: prefix protocol so Node.js can distinguish
+    the final result from intermediate EVENT lines.
+
+    Each result is printed as:  RESULT:<json>
+    This allows Node.js to parse stdout line-by-line and handle
+    intermediate progress events (via _emit_event) separately.
     """
-    print(json.dumps(data, indent=2, default=str))
+    print(f"RESULT:{json.dumps(data, default=str)}", flush=True)
+
+
+def _emit_event(event_type: str, data: Any = None) -> None:
+    """
+    Print an intermediate progress event to stdout for Node.js to parse.
+
+    Each event is printed as:  EVENT:<json>
+    Node.js reads these in real-time via the stdout 'data' event
+    and forwards them to the frontend via SSE.
+
+    The event dict has two keys:
+      - "event": the SSE event name (e.g. "thought", "phase_change")
+      - "data": the SSE event payload
+
+    flush=True is CRITICAL — without it, Python may buffer output
+    and Node.js won't see the event until the buffer fills or the
+    process exits.
+    """
+    payload = {"event": event_type, "data": data}
+    print(f"EVENT:{json.dumps(payload, default=str)}", flush=True)
 
 
 def _fail(message: str, details: str = "") -> None:
@@ -557,6 +579,9 @@ def cmd_generate(args: argparse.Namespace) -> None:
     os.makedirs(output_dir, exist_ok=True)
 
     # ── Phase 1 LLM call ──────────────────────────────────────────────────
+    _emit_event("thought", {"type": "understanding", "content": f"Analyzing network requirements: {user_request[:80]}..."})
+    _emit_event("phase_change", {"phase": "generating", "sub_phase": "thinking"})
+
     result, thinking_text, updated_history = generate_network_topology(
         user_request,
         filtered_inventory,
@@ -569,6 +594,9 @@ def cmd_generate(args: argparse.Namespace) -> None:
         _fail("AI generation failed after all retries. Check API key and model config.")
 
     # ── Hardware injection + VLAN patching ─────────────────────────────────
+    _emit_event("thought", {"type": "decision", "content": "Topology generated. Injecting hardware configurations..."})
+    _emit_event("phase_change", {"phase": "generating", "sub_phase": "building"})
+
     phase1_file = os.path.join(output_dir, "_topology.json")
     enriched = process_and_save_topology(result, phase1_file)
 
@@ -578,6 +606,8 @@ def cmd_generate(args: argparse.Namespace) -> None:
     topology_dict = enriched.model_dump()
 
     # ── Image manifest ────────────────────────────────────────────────────
+    _emit_event("thought", {"type": "info", "content": "Generating image requirements manifest..."})
+
     manifest_file = os.path.join(output_dir, "image_manifest.txt")
     template_image_map = getattr(profile, "normalized_template_image_map", {}) or {}
     generate_image_manifest(
@@ -791,6 +821,9 @@ def cmd_export(args: argparse.Namespace) -> None:
     template_image_map = getattr(profile, "normalized_template_image_map", {}) or {}
 
     # ── Phase 2: Config generation ────────────────────────────────────────
+    _emit_event("thought", {"type": "info", "content": f"Generating device configurations with '{security_profile}' security profile..."})
+    _emit_event("phase_change", {"phase": "exporting", "sub_phase": "finalizing"})
+
     run_phase2, _, _ = _import_config_agent()
     (apply_switch_port_patches,) = _import_topo_finalizer()
 
@@ -823,6 +856,9 @@ def cmd_export(args: argparse.Namespace) -> None:
             json.dump(final_dict, f, indent=2, default=str)
 
     # ── GNS3 export ───────────────────────────────────────────────────────
+    _emit_event("thought", {"type": "info", "content": "Exporting GNS3 portable project..."})
+    _emit_event("phase_change", {"phase": "exporting", "sub_phase": "exporting"})
+
     convert, export_configs_for_review, ExportError = _import_gns3_exporter()
 
     project_name = final_dict.get("name", "StructuraNet_Project")
@@ -1059,7 +1095,7 @@ def cmd_manifest(args: argparse.Namespace) -> None:
     output_path = getattr(args, "output", None)
 
     # ── Generate manifest ─────────────────────────────────────────────────
-    _, generate_image_manifest, _, _ = _import_agent()
+    _, _, generate_image_manifest, _ = _import_agent()
     load_catalog, _ = _import_catalog()
     catalog = load_catalog()
 

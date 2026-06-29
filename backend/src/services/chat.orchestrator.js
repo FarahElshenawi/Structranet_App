@@ -1,0 +1,612 @@
+/**
+ * Chat Orchestrator — Hybrid routing with prompt caching.
+ *
+ * Architecture:
+ *  1. Heuristic intent classifier (no LLM call) routes to 'chat' or 'tool'
+ *     - 'chat' = greetings, identity, meta, knowledge questions
+ *     - 'tool' = build/modify/export requests (default — never miss a design)
+ *  2. CHAT fast-path: tool_choice='none', NO tools sent, lean prompt
+ *     → LLM streams response in ~1-2s (skips tool evaluation entirely)
+ *  3. TOOL path: full tool schemas + prompt caching headers
+ *     → Anthropic/OpenRouter caches the system prompt + tool defs
+ *     → Subsequent calls in the same session reuse the cache (faster)
+ *
+ * Emoji safety net: stripEmojis() runs on every token_delta before broadcast.
+ */
+import OpenAI from 'openai';
+import config from '../config/index.js';
+import sseService from './sse.service.js';
+import aiEngine from './ai-engine.bridge.js';
+import { Session } from '../models/Session.js';
+import { Topology } from '../models/Topology.js';
+import { ExportJob } from '../models/Export.js';
+import logger from '../utils/logger.js';
+import { LLMError, EngineError } from '../utils/errors.js';
+import fs from 'fs/promises';
+import path from 'path';
+
+const MAX_ROUNDS = 6;
+
+// ── LLM client ─────────────────────────────────────────────
+const client = new OpenAI({
+  apiKey: config.llm.apiKey,
+  baseURL: config.llm.baseUrl,
+});
+
+// ═══════════════════════════════════════════════════════════
+// INTENT CLASSIFIER (heuristic, no LLM call)
+// Conservative: only routes to 'chat' for OBVIOUS small talk.
+// Anything ambiguous → 'tool' (safe default, never miss a design request).
+// ═══════════════════════════════════════════════════════════
+function classifyIntent(userMessage) {
+  if (!userMessage || typeof userMessage !== 'string') return 'tool';
+  const msg = userMessage.toLowerCase().trim();
+
+  // ── Greetings (only if short) ───────────────────────────
+  const greetings = ['hi', 'hello', 'hey', 'yo', 'sup', 'howdy', 'hiya', 'good morning', 'good evening', 'good afternoon', 'gm'];
+  if (msg.length < 30 && greetings.some(g => msg === g || msg.startsWith(g + ' ') || msg.startsWith(g + '!') || msg.startsWith(g + '.'))) {
+    return 'chat';
+  }
+
+  // ── Identity / capability questions ─────────────────────
+  const identityPatterns = [
+    /^(who|what) (are|r) (you|u)\b/i,
+    /^what(?:'s|s| is) your name/i,
+    /^are you (a |an )?(ai|bot|human|real|robot)/i,
+    /^what can you do/i,
+    /^help me/i,
+    /^how do (i|you) (use|start)/i,
+    /^what are you/i,
+    /^introduce yourself/i,
+    /^tell me about yourself/i,
+  ];
+  if (identityPatterns.some(re => re.test(msg))) return 'chat';
+
+  // ── Meta questions about the assistant ──────────────────
+  const metaPatterns = [
+    /why (are|r) (you|u) (slow|late|taking)/i,
+    /how (do|does) you work/i,
+    /what model are you/i,
+    /are you (chatgpt|gpt|claude|ai)/i,
+    /thank/i,
+    /^thanks/i,
+    /^ok$/i, /^okay$/i, /^cool$/i, /^nice$/i, /^got it$/i, /^understood$/i,
+  ];
+  if (metaPatterns.some(re => re.test(msg))) return 'chat';
+
+  // ── Networking knowledge questions (NOT build requests) ──
+  const knowledgePatterns = [
+    /^(what|how|why|when|where|can|could|would|should|do|does|did|is|are) .*(vlan|ospf|bgp|rip|etherchannel|spanning tree|stp|acl|nat|dhcp|dns|firewall|vpn|ipsec|gre|hsrp|vrrp|glbp|snmp|ntp|syslog|aaa|tacacs|radius|ssh|telnet|port security|dhcp snooping|arp|mac|subnet|cidr|ipv4|ipv6|mtu|qos|cos|dscp|lldp|cdp|trunk|access port)/i,
+    /^explain .*(vlan|ospf|bgp|rip|stp|nat|dhcp|firewall|vpn|acl)/i,
+    /^difference between/i,
+    /^tell me about .*(network|cisco|router|switch)/i,
+    /^what is .*(network|cisco|router|switch|vlan|ospf)/i,
+  ];
+  if (knowledgePatterns.some(re => re.test(msg))) return 'chat';
+
+  // ── Default: tool path (safe — never miss a design request) ──
+  return 'tool';
+}
+
+// ═══════════════════════════════════════════════════════════
+// EMOJI SAFETY NET
+// Hard guarantee: NO emojis ever reach the frontend, regardless of LLM behavior.
+// ═══════════════════════════════════════════════════════════
+const EMOJI_REGEX = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}\u{1F1E6}-\u{1F1FF}\u{1F900}-\u{1F9FF}\u{2300}-\u{23FF}\u{2190}-\u{21FF}\u{200D}\u{20E3}]/gu;
+
+function stripEmojis(text) {
+  if (!text || typeof text !== 'string') return text;
+  return text.replace(EMOJI_REGEX, '').replace(/[ \t]{2,}/g, ' ').trim();
+}
+
+// ═══════════════════════════════════════════════════════════
+// TOOL DEFINITIONS
+// ═══════════════════════════════════════════════════════════
+const TOOL_DEFINITIONS = [
+  {
+    type: 'function',
+    function: {
+      name: 'generate_topology',
+      description: 'Generate a NEW network topology from a natural-language request. Use when the user asks to BUILD, CREATE, or DESIGN a network. Returns the topology, design review, and requirements.',
+      parameters: {
+        type: 'object',
+        properties: {
+          request: { type: 'string', description: 'The user\'s natural-language request describing the network to build.' },
+          securityProfile: { type: 'string', enum: ['none', 'basic', 'enterprise'], description: 'Security profile. Default: enterprise.' },
+        },
+        required: ['request'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_topology',
+      description: 'Modify an EXISTING topology based on user feedback. Use when the user asks to ADD, REMOVE, or CHANGE devices or links. Returns the updated topology.',
+      parameters: {
+        type: 'object',
+        properties: {
+          feedback: { type: 'string', description: 'The user\'s requested change in natural language.' },
+          securityProfile: { type: 'string', enum: ['none', 'basic', 'enterprise'], description: 'Security profile for regenerated configs.' },
+        },
+        required: ['feedback'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'export_project',
+      description: 'Export the current topology as a GNS3 portable project with full device configurations. Use when the user APPROVES the topology or asks to EXPORT, DOWNLOAD, or GENERATE CONFIGS.',
+      parameters: {
+        type: 'object',
+        properties: {
+          securityProfile: { type: 'string', enum: ['none', 'basic', 'enterprise'], description: 'Security profile to apply.' },
+        },
+        required: [],
+      },
+    },
+  },
+];
+
+// ═══════════════════════════════════════════════════════════
+// SYSTEM PROMPTS (two variants — lean vs full)
+// ═══════════════════════════════════════════════════════════
+
+// CHAT fast-path: ultra-lean prompt, no tools sent
+const SYSTEM_PROMPT_CHAT = `You are StructuraNet AI, an expert network architect.
+
+Rules:
+- NEVER use emojis. Plain text and clean markdown only. No exceptions.
+- ANSWER THE USER'S ACTUAL QUESTION directly. Do not pivot to a capabilities pitch.
+- Be concise: 1-3 sentences for casual chat, longer only for technical explanations.
+- Never re-introduce yourself or listing capabilities unless this is the very first message AND the user only said "hi" or "hello".
+
+If the user wants to BUILD, MODIFY, or EXPORT a network, tell them to rephrase their request explicitly so the system can route it to the right tool.`;
+
+// TOOL path: full prompt with tool guidance
+const SYSTEM_PROMPT_TOOL = `You are StructuraNet AI, an expert network architect.
+
+ABSOLUTE PROHIBITION — NO EMOJIS:
+You are STRICTLY FORBIDDEN from using emojis in any response. This includes smileys, objects, symbols, checkmarks, arrows, and ANY emoji character. Plain text and clean markdown ONLY. If you are about to type an emoji, use plain text instead. Examples: "Hi." not "Hi! 👋", "Done." not "Done! ✅".
+
+BEHAVIOR:
+1. NEVER use emojis.
+2. If the user is just chatting, greeting, or asking general questions, respond immediately in text WITHOUT calling any tools.
+3. Only call tools if a network design, modification, or export is explicitly requested.
+4. ANSWER THE USER'S ACTUAL QUESTION directly. Don't pivot to a capabilities pitch.
+5. Be concise. Briefly explain (1 sentence) before calling a tool, then summarize after.
+6. Never re-introduce yourself or list capabilities unless this is the very first message.
+
+TOOL USAGE:
+- generate_topology: ONLY when user asks to BUILD/CREATE/DESIGN a network
+- edit_topology: ONLY when user asks to MODIFY/CHANGE/ADD/REMOVE in an existing topology
+- export_project: ONLY when user asks to EXPORT/DOWNLOAD/GENERATE CONFIGS for an approved topology
+
+If the request is ambiguous, ask ONE short clarifying question.`;
+
+// ── First-message greeting (only injected on very first turn) ──
+const FIRST_MESSAGE_PROMPT = `
+
+NOTE: This is the very first message in a new conversation. If the user just said a greeting like "hi" or "hello", respond with a SINGLE short sentence acknowledging them and asking what they'd like to build or learn. Do not list your capabilities in a bulleted format — keep it natural and brief.`;
+
+// ═══════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════
+
+function buildSystemPrompt(intent, isFirstMessage, hasTopology) {
+  const base = intent === 'chat' ? SYSTEM_PROMPT_CHAT : SYSTEM_PROMPT_TOOL;
+  let prompt = base;
+  if (isFirstMessage) prompt += FIRST_MESSAGE_PROMPT;
+  if (hasTopology && intent === 'tool') {
+    prompt += `\n\nA topology already exists in this session. If the user asks to modify it, use edit_topology. If they ask to export, use export_project.`;
+  }
+  return prompt;
+}
+
+function buildLLMMessages(session, userMessage, isFirstMessage, intent) {
+  const hasTopology = !!session.currentTopologyId;
+  const messages = [{ role: 'system', content: buildSystemPrompt(intent, isFirstMessage, hasTopology) }];
+
+  const sessionMessages = session.messages || [];
+  for (const m of sessionMessages) {
+    if (m.role === 'system') continue;
+    messages.push({ role: m.role, content: m.content });
+    if (m.role === 'assistant' && m.toolSummary) {
+      messages.push({ role: 'system', content: `[Tool ${m.tool} result]: ${m.toolSummary}` });
+    }
+  }
+
+  // Avoid duplicate user message (appendMessage already saved it to DB)
+  const lastMsg = sessionMessages[sessionMessages.length - 1];
+  const lastIsCurrentUserMsg = lastMsg && lastMsg.role === 'user' && lastMsg.content === userMessage;
+  if (!lastIsCurrentUserMsg) {
+    messages.push({ role: 'user', content: userMessage });
+  }
+
+  return messages;
+}
+
+// ── Map Python EVENT: → SSE tool_progress ─────────────────
+function forwardPythonEvent(sessionId, tool, event) {
+  if (!event || !event.event) return;
+  const { event: type, data } = event;
+  if (type === 'thought' && data?.content) {
+    sseService.broadcast(sessionId, 'tool_progress', { tool, step: data.content, thoughtType: data.type });
+  } else if (type === 'phase_change' && data?.phase) {
+    sseService.broadcast(sessionId, 'tool_progress', { tool, step: `Phase: ${data.phase}${data.sub_phase ? ` — ${data.sub_phase}` : ''}` });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// ATOMIC DB OPERATIONS (avoid Mongoose VersionError)
+// ═══════════════════════════════════════════════════════════
+async function appendMessage(sessionId, message) {
+  await Session.updateOne(
+    { _id: sessionId },
+    { $push: { messages: message }, $set: { lastActivityAt: new Date() } }
+  );
+}
+
+async function maybeAutoTitle(sessionId, firstUserContent) {
+  const title = firstUserContent.slice(0, 60) + (firstUserContent.length > 60 ? '…' : '');
+  await Session.updateOne({ _id: sessionId, title: 'New Chat' }, { $set: { title } });
+}
+
+// ═══════════════════════════════════════════════════════════
+// TOOL EXECUTION
+// ═══════════════════════════════════════════════════════════
+async function executeTool(sessionId, userId, toolName, args) {
+  sseService.broadcast(sessionId, 'tool_start', { tool: toolName, args });
+  let result;
+  let summary = '';
+
+  try {
+    const onEvent = (event) => forwardPythonEvent(sessionId, toolName, event);
+    const outputDir = path.resolve(process.cwd(), 'output', sessionId);
+    await fs.mkdir(outputDir, { recursive: true });
+
+    if (toolName === 'generate_topology') {
+      result = await aiEngine.generate({
+        request: args.request,
+        securityProfile: args.securityProfile || 'enterprise',
+        outputDir,
+      }, onEvent);
+
+      const topology = await Topology.create({
+        sessionId, userId,
+        request: args.request,
+        topologyDict: result.topology_dict,
+        name: result.topology_data?.name || 'Untitled',
+        nodeCount: result.topology_data?.node_count || 0,
+        linkCount: result.topology_data?.link_count || 0,
+        designReview: result.design_review || null,
+        assumptions: result.assumptions || null,
+        phase1File: result.phase1_file || null,
+      });
+
+      await Session.findByIdAndUpdate(sessionId, {
+        currentTopologyId: topology._id,
+        originalRequest: args.request,
+      });
+
+      summary = `Generated topology "${topology.name}" with ${topology.nodeCount} devices and ${topology.linkCount} links.`;
+
+      sseService.broadcast(sessionId, 'topology_ready', {
+        topologyId: topology._id,
+        topology_dict: result.topology_dict,
+        topology_data: result.topology_data,
+        requirements: result.requirements,
+        design_review: result.design_review,
+        assumptions: result.assumptions,
+        thinking_text: result.thinking_text,
+      });
+
+    } else if (toolName === 'edit_topology') {
+      const session = await Session.findById(sessionId);
+      const topology = await Topology.findById(session.currentTopologyId);
+      if (!topology) throw new EngineError('No existing topology to edit. Ask the user to generate one first.');
+
+      result = await aiEngine.edit({
+        feedback: args.feedback,
+        topologyPath: topology.phase1File || path.resolve(outputDir, '_topology.json'),
+        originalRequest: session.originalRequest || topology.request,
+        securityProfile: args.securityProfile || 'enterprise',
+        outputDir,
+      }, onEvent);
+
+      const updated = await Topology.create({
+        sessionId, userId,
+        request: `${topology.request} (edited: ${args.feedback})`,
+        topologyDict: result.topology_dict,
+        name: result.topology_data?.name || topology.name,
+        nodeCount: result.topology_data?.node_count || 0,
+        linkCount: result.topology_data?.link_count || 0,
+        designReview: result.design_review || null,
+        assumptions: result.assumptions || null,
+        phase1File: result.phase1_file || null,
+      });
+
+      await Session.findByIdAndUpdate(sessionId, { currentTopologyId: updated._id });
+      summary = `Updated topology: ${updated.name} (${updated.nodeCount} devices, ${updated.linkCount} links).`;
+
+      sseService.broadcast(sessionId, 'topology_ready', {
+        topologyId: updated._id,
+        topology_dict: result.topology_dict,
+        topology_data: result.topology_data,
+        requirements: result.requirements,
+        thinking_text: result.thinking_text,
+      });
+
+    } else if (toolName === 'export_project') {
+      const session = await Session.findById(sessionId);
+      const topology = await Topology.findById(session.currentTopologyId);
+      if (!topology) throw new EngineError('No topology to export. Generate one first.');
+
+      const exportJob = await ExportJob.create({
+        sessionId, userId,
+        topologyId: topology._id,
+        securityProfile: args.securityProfile || 'enterprise',
+        status: 'running',
+      });
+      await Session.findByIdAndUpdate(sessionId, { currentExportId: exportJob._id });
+
+      result = await aiEngine.exportProject({
+        topologyPath: topology.phase1File || path.resolve(outputDir, '_topology.json'),
+        securityProfile: args.securityProfile || 'enterprise',
+        outputDir,
+      }, onEvent);
+
+      const files = {
+        gns3Project: result.gns3project_path || null,
+        configsZip: result.config_review_dir || null,
+        manifest: result.manifest_file || null,
+      };
+
+      exportJob.status = 'complete';
+      exportJob.files = files;
+      exportJob.finalDict = result.final_dict;
+      exportJob.validation = result.validation;
+      await exportJob.save();
+
+      summary = `Deployment kit ready: GNS3 project + ${Object.keys(result.config_texts || {}).length} device configs.`;
+
+      sseService.broadcast(sessionId, 'deployment_ready', {
+        exportId: exportJob._id,
+        files: [
+          { name: path.basename(result.gns3project_path || 'project.gns3project'), type: 'gns3project', size: null },
+          { name: 'configs.zip', type: 'configs', size: null },
+          { name: 'manifest.txt', type: 'manifest', size: null },
+        ].filter(f => f.name),
+        securityProfile: args.securityProfile || 'enterprise',
+        validation: result.validation,
+        deviceConfigs: Object.keys(result.config_texts || {}),
+      });
+
+    } else {
+      throw new EngineError(`Unknown tool: ${toolName}`);
+    }
+
+    sseService.broadcast(sessionId, 'tool_result', { tool: toolName, success: true, summary });
+    return { success: true, summary, raw: result };
+
+  } catch (err) {
+    logger.error(`Tool ${toolName} failed:`, err);
+    sseService.broadcast(sessionId, 'tool_result', { tool: toolName, success: false, error: err.message });
+    sseService.broadcast(sessionId, 'error', { message: `Tool ${toolName} failed: ${err.message}`, tool: toolName });
+    throw err;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// MAIN DISPATCH LOOP (hybrid routing)
+// ═══════════════════════════════════════════════════════════
+export async function dispatch(sessionId, userId, userMessage) {
+  const session = await Session.findById(sessionId).lean();
+  if (!session) throw new EngineError('Session not found');
+
+  // ── Save user message ATOMICALLY ────────────────────────
+  await appendMessage(sessionId, {
+    role: 'user',
+    content: userMessage,
+    createdAt: new Date(),
+  });
+
+  const isFirstUser = !session.messages?.some(m => m.role === 'user');
+  if (isFirstUser) {
+    await maybeAutoTitle(sessionId, userMessage);
+  }
+
+  // ── HYBRID ROUTING: classify intent ─────────────────────
+  const hasTopology = !!session.currentTopologyId;
+  const intent = classifyIntent(userMessage);
+  logger.info(`[orchestrator] Session ${sessionId} intent="${intent}" msg="${userMessage.slice(0, 50)}"`);
+
+  const freshSession = await Session.findById(sessionId).lean();
+  let messages = buildLLMMessages(freshSession, userMessage, isFirstUser, intent);
+  let round = 0;
+
+  while (round < MAX_ROUNDS) {
+    round++;
+    logger.info(`[orchestrator] Session ${sessionId} round ${round}/${MAX_ROUNDS} (intent=${intent})`);
+
+    // ── Build LLM call params based on intent ──────────────
+    const llmParams = {
+      model: config.llm.model,
+      messages,
+      stream: true,
+    };
+
+    if (intent === 'tool' || round > 1) {
+      // TOOL path: full tool schemas + prompt caching headers
+      llmParams.tools = TOOL_DEFINITIONS;
+      llmParams.tool_choice = 'auto';
+      llmParams.max_tokens = config.llm.maxTokens;
+
+      // ── Prompt caching headers (Anthropic/OpenRouter) ────
+      // Caches the system prompt + tool definitions prefix.
+      // Speeds up subsequent calls in the same session (design iterations).
+      // OpenRouter passes these through to Anthropic models.
+      llmParams.extra_headers = {
+        'anthropic-beta': 'prompt-caching-2024-07-31',
+        'HTTP-Referer': 'https://structuranet.ai',
+        'X-Title': 'StructuraNet AI',
+      };
+      // Anthropic-style cache_control on the system message
+      // (OpenRouter translates this for Anthropic-family models)
+      if (messages[0]?.role === 'system') {
+        messages[0] = {
+          ...messages[0],
+          content: [
+            { type: 'text', text: messages[0].content, cache_control: { type: 'ephemeral' } },
+          ],
+        };
+      }
+    } else {
+      // CHAT fast-path: NO tools, lean prompt, smaller token budget
+      llmParams.tool_choice = 'none';
+      llmParams.max_tokens = 800;
+    }
+
+    // ── Call LLM with streaming ────────────────────────────
+    let textContent = '';
+    let toolCalls = [];
+    let stream;
+    try {
+      stream = await client.chat.completions.create(llmParams);
+    } catch (err) {
+      logger.error('LLM stream init failed:', err);
+      sseService.broadcast(sessionId, 'error', { message: `LLM call failed: ${err.message}` });
+      throw new LLMError(`LLM call failed: ${err.message}`);
+    }
+
+    try {
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta;
+        if (!delta) continue;
+
+        // ── Text delta → broadcast token_delta (with emoji stripping) ──
+        if (delta.content) {
+          const cleanDelta = stripEmojis(delta.content);
+          if (cleanDelta) {
+            textContent += cleanDelta;
+            sseService.broadcast(sessionId, 'token_delta', { token: cleanDelta });
+          }
+        }
+
+        // ── Tool call delta → accumulate silently ───────────
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index;
+            if (!toolCalls[idx]) {
+              toolCalls[idx] = { id: tc.id || '', type: 'function', function: { name: '', arguments: '' } };
+            }
+            if (tc.id) toolCalls[idx].id = tc.id;
+            if (tc.function?.name) toolCalls[idx].function.name += tc.function.name;
+            if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
+          }
+        }
+      }
+    } catch (err) {
+      logger.error('LLM stream read failed:', err);
+      sseService.broadcast(sessionId, 'error', { message: `LLM stream failed: ${err.message}` });
+      throw new LLMError(`LLM stream failed: ${err.message}`);
+    }
+
+    toolCalls = toolCalls.filter(tc => tc && tc.function?.name);
+
+    // ── Save assistant message ATOMICALLY ──────────────────
+    let savedAssistantId = null;
+    if (textContent) {
+      const assistantMsg = {
+        role: 'assistant',
+        content: textContent,
+        tool: toolCalls[0]?.function.name || null,
+        createdAt: new Date(),
+      };
+      const updateResult = await Session.findByIdAndUpdate(
+        sessionId,
+        { $push: { messages: assistantMsg } },
+        { new: true, select: 'messages' }
+      );
+      savedAssistantId = updateResult?.messages?.[updateResult.messages.length - 1]?._id || null;
+      sseService.broadcast(sessionId, 'agent_message', { message: textContent });
+    }
+
+    // ── No tool calls → done ───────────────────────────────
+    if (toolCalls.length === 0) {
+      logger.info(`[orchestrator] Round ${round}: no tool calls, exiting loop`);
+      break;
+    }
+
+    // ── Append assistant message with tool_calls to LLM history ──
+    // CRITICAL: Strict OpenAI-compatible providers (Stealth, etc.) reject
+    // `content: null` on assistant messages that have tool_calls.
+    // Use empty string "" instead of null when there's no text content.
+    // Also: only include the `content` field if it's a non-empty string;
+    // omitting it entirely is also acceptable per OpenAI spec.
+    const assistantMsg = {
+      role: 'assistant',
+      tool_calls: toolCalls.map(tc => ({
+        id: tc.id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        type: 'function',
+        function: {
+          name: tc.function.name,
+          arguments: tc.function.arguments || '{}',
+        },
+      })),
+    };
+    // Only include content if it's a non-empty string (avoid null which causes 400)
+    if (textContent && typeof textContent === 'string' && textContent.trim()) {
+      assistantMsg.content = textContent;
+    } else {
+      assistantMsg.content = ''; // empty string is accepted; null is NOT
+    }
+    messages.push(assistantMsg);
+
+    // ── Execute each tool ──────────────────────────────────
+    for (const tc of toolCalls) {
+      let args = {};
+      try { args = JSON.parse(tc.function.arguments || '{}'); } catch { args = {}; }
+
+      // Ensure tool_call_id is a non-empty string (some providers reject null/empty)
+      const toolCallId = tc.id || assistantMsg.tool_calls[0]?.id || `call_${Date.now()}`;
+
+      try {
+        const result = await executeTool(sessionId, userId, tc.function.name, args);
+
+        // Update the assistant message's toolSummary ATOMICALLY
+        if (savedAssistantId) {
+          await Session.updateOne(
+            { _id: sessionId, 'messages._id': savedAssistantId },
+            { $set: { 'messages.$.toolSummary': result.summary } }
+          );
+        }
+
+        // Tool result message — strict format required by OpenAI/Stealth:
+        //   { role: 'tool', tool_call_id: <string>, content: <string> }
+        // content MUST be a string. JSON.stringify guarantees this.
+        messages.push({
+          role: 'tool',
+          tool_call_id: toolCallId,
+          content: JSON.stringify({ success: true, summary: result.summary }),
+        });
+      } catch (err) {
+        messages.push({
+          role: 'tool',
+          tool_call_id: toolCallId,
+          content: JSON.stringify({ success: false, error: err.message || 'Unknown error' }),
+        });
+      }
+    }
+  }
+
+  if (round >= MAX_ROUNDS) {
+    logger.warn(`[orchestrator] Session ${sessionId} hit max rounds (${MAX_ROUNDS})`);
+  }
+
+  sseService.broadcast(sessionId, 'complete', { summary: 'Orchestration complete', rounds: round });
+  return { ok: true, rounds: round };
+}
+
+export default { dispatch };

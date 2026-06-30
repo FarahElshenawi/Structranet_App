@@ -22,16 +22,17 @@ export const authSchemas = {
 };
 
 export const profileSchemas = {
+  // The onboarding popup sends the user's GNS3 environment capability
+  // (version + which backends are usable) and an optional image map.
+  // The PUT handler marks the profile as calibrated once saved.
   update: z.object({
-    gns3Server: z.object({
-      host: z.string().nullable().optional(),
-      port: z.number().int().min(1).max(65535).nullable().optional(),
-    }).optional(),
+    gns3Version: z.string().max(20).optional(),
+    supportsIou: z.boolean().optional(),
+    supportsQemu: z.boolean().optional(),
+    supportsDocker: z.boolean().optional(),
+    strictValidation: z.boolean().optional(),
+    requireTemplateImageMap: z.boolean().optional(),
     imageMap: z.record(z.string(), z.string()).optional(),
-  }),
-  testConnection: z.object({
-    host: z.string().min(1),
-    port: z.number().int().min(1).max(65535),
   }),
 };
 

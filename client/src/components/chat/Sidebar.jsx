@@ -1,16 +1,21 @@
 import { X, Plus, MessageSquare, Trash2, LogOut, User, Settings, HelpCircle, ChevronDown } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { useAuthStore } from '../../stores/authStore.js';
 
 /**
  * Sidebar — slide-in drawer.
  * Deep zinc-900 (not pure black) for softer transition to white workspace.
  * Profile section uses a clean popover instead of raw text links.
+ *
+ * The "Settings" button reopens the GNS3 image-map calibration popup so
+ * users can update their image mappings after the initial onboarding.
  */
 export default function Sidebar({
   open, sessions, activeSessionId, user,
   onNewChat, onSelect, onDelete, onLogout, onClose,
 }) {
   const [profileOpen, setProfileOpen] = useState(false);
+  const openProfileModal = useAuthStore((s) => s.openProfileModal);
 
   useEffect(() => {
     if (!open) return;
@@ -121,9 +126,15 @@ export default function Sidebar({
 
           {profileOpen && (
             <div className="absolute bottom-full left-3 right-3 mb-1 rounded-xl border border-zinc-700 bg-zinc-800 shadow-xl overflow-hidden animate-fade-in">
-              <button className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors">
+              <button
+                onClick={() => {
+                  openProfileModal();
+                  setProfileOpen(false);
+                }}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors"
+              >
                 <Settings size={14} className="text-zinc-500" />
-                Settings
+                GNS3 Image Settings
               </button>
               <button className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors">
                 <HelpCircle size={14} className="text-zinc-500" />

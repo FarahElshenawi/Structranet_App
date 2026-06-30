@@ -25,6 +25,7 @@ export default function App() {
   const fetchProfile = useAuthStore((s) => s.fetchProfile);
   const loadSessions = useChatStore((s) => s.loadSessions);
   const profile = useAuthStore((s) => s.profile);
+  const showProfileModal = useAuthStore((s) => s.showProfileModal);
 
   // On mount: if we have a token but no user, fetch /me
   useEffect(() => {
@@ -37,6 +38,16 @@ export default function App() {
       loadSessions();
     }
   }, []); // eslint-disable-line
+
+  // Show the onboarding modal when:
+  //  (a) the user explicitly opened it via Sidebar "Settings" (showProfileModal),
+  //      OR
+  //  (b) it's the user's first sign-in and they haven't calibrated yet
+  //      (!profile.isCalibrated). Once they save or skip, isCalibrated
+  //      becomes true and the popup won't auto-reappear.
+  const shouldShowOnboarding = isAuthenticated && (
+    showProfileModal || (profile && !profile.isCalibrated)
+  );
 
   return (
     <>
@@ -55,10 +66,7 @@ export default function App() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
 
-      {/* Show onboarding modal after login if user hasn't calibrated GNS3 */}
-      {isAuthenticated && profile && !profile.isCalibrated && (
-        <OnboardingModal />
-      )}
+      {shouldShowOnboarding && <OnboardingModal />}
     </>
   );
 }

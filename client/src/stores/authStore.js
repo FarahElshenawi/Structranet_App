@@ -15,6 +15,10 @@ export const useAuthStore = create(
       isAuthenticated: false,
       isLoading: false,
       profile: null,  // GNS3 profile
+      // Controls whether the OnboardingModal is force-shown (e.g. when the
+      // user clicks "Settings" in the sidebar). When false, the modal only
+      // auto-shows if profile.isCalibrated is false.
+      showProfileModal: false,
 
       // Actions
       login: async (email, password) => {
@@ -89,6 +93,15 @@ export const useAuthStore = create(
         set({ profile });
         return profile;
       },
+
+      // ── Onboarding modal controls ────────────────────────────
+      // openProfileModal: force-show the GNS3 calibration popup (used by
+      //   the sidebar "Settings" button so users can recalibrate later).
+      // closeProfileModal: hide the popup (used by the modal's X / Skip /
+      //   Save buttons). Does NOT change isCalibrated — that is set by
+      //   the backend on PUT /profile.
+      openProfileModal: () => set({ showProfileModal: true }),
+      closeProfileModal: () => set({ showProfileModal: false }),
     }),
     {
       name: 'structuranet-auth',

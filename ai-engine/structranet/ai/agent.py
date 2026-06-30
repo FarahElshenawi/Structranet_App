@@ -65,7 +65,7 @@ from structranet.generation.topology_finalizer import apply_switch_port_patches
 load_dotenv()
 logger = logging.getLogger("structranet.ai_agent")
 
-DEFAULT_MODEL = os.getenv("AI_MODEL", "openrouter/owl-alpha")
+DEFAULT_MODEL = os.getenv("AI_MODEL", "poolside/laguna-m.1:free")
 BASE_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "16384"))
 
 # Node types that never need a disk image

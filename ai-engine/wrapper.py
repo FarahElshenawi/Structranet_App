@@ -1174,6 +1174,102 @@ def cmd_brief(args: argparse.Namespace) -> None:
     })
 
 
+def cmd_catalog(args: argparse.Namespace) -> None:
+    """
+    Export the appliance catalog as a flat JSON list.
+
+    This command exposes the built-in APPLIANCE_CATALOG (the single source
+    of truth for device definitions) to the Node.js backend, which forwards
+    it to the frontend for the GNS3 profile onboarding popup.
+
+    The frontend uses this list to render a searchable dropdown of all
+    supported devices, so the user can map each device template to the
+    image filename installed on their GNS3 server.
+
+    Output: JSON object with a "devices" array. Each device entry has:
+      - template:    str   — the catalog key (e.g. "Cisco 7200")
+      - node_type:   str   — GNS3 node type (dynamips, iou, qemu, docker, ...)
+      - platform:    str|None — platform identifier (e.g. "c7200") if applicable
+      - category:    str   — human-readable category for grouping in the UI
+      - default_image: str|None — primary image filename from the catalog
+      - additional_images: list[str] — extra disk images (hdb, hdc, hdd)
+      - requires_image: bool — whether this device needs a user-supplied image
+    """
+    from structranet.constants.appliances import APPLIANCE_CATALOG  # noqa: PLC0415
+    from structranet.constants.gns3 import (  # noqa: PLC0415
+        BUILTIN_NODE_TYPES,
+        APPLIANCE_NODE_TYPES,
+    )
+
+    # ── Category mapping by node_type ─────────────────────────────────────
+    # Built-in nodes (switches, hubs, VPCS, cloud, NAT) don't need images.
+    # Appliance nodes (dynamips, iou, qemu, docker) do.
+    _CATEGORY_BY_NODE_TYPE = {
+        "dynamips":         "Cisco Routers (Dynamips)",
+        "iou":              "Cisco IOU (L2/L3)",
+        "qemu":             "QEMU Appliances",
+        "docker":           "Docker Containers",
+        "vpcs":             "Virtual PCs (built-in)",
+        "ethernet_switch":  "Built-in Switches",
+        "ethernet_hub":     "Built-in Hubs",
+        "cloud":            "Built-in Network Nodes",
+        "nat":              "Built-in Network Nodes",
+        "frame_relay_switch": "Built-in Switches",
+        "atm_switch":       "Built-in Switches",
+        "traceng":          "Built-in Network Nodes",
+    }
+
+    # ── Image field names in priority order ───────────────────────────────
+    # hda is always the primary; hdb/hdc/hdd are additional disks.
+    _PRIMARY_IMAGE_KEYS = ("image", "hda_disk_image")
+    _EXTRA_IMAGE_KEYS = ("hdb_disk_image", "hdc_disk_image", "hdd_disk_image")
+
+    devices: List[Dict[str, Any]] = []
+
+    for template_name, props in APPLIANCE_CATALOG.items():
+        node_type = props.get("node_type", "")
+        platform = props.get("platform")  # may be None for non-Dynamips
+        category = _CATEGORY_BY_NODE_TYPE.get(node_type, "Other")
+        requires_image = node_type in APPLIANCE_NODE_TYPES
+
+        # ── Extract default image(s) ──────────────────────────────────────
+        default_image = None
+        for key in _PRIMARY_IMAGE_KEYS:
+            val = props.get(key)
+            if val:
+                default_image = val
+                break
+
+        additional_images = [
+            props[key] for key in _EXTRA_IMAGE_KEYS if props.get(key)
+        ]
+
+        devices.append({
+            "template":          template_name,
+            "node_type":         node_type,
+            "platform":          platform,
+            "category":          category,
+            "default_image":     default_image,
+            "additional_images": additional_images,
+            "requires_image":    requires_image,
+        })
+
+    # ── Sort: appliances first (by category then name), then built-ins ────
+    devices.sort(key=lambda d: (
+        d["requires_image"],        # True (1) sorts after False (0) — but we
+        d["category"],              # want appliances first, so we negate below.
+        d["template"],
+    ))
+    # Reverse so requires_image=True (1) comes first
+    devices.sort(key=lambda d: not d["requires_image"])
+
+    _ok({
+        "success": True,
+        "count": len(devices),
+        "devices": devices,
+    })
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  CLI ARGUMENT PARSER — Defines the command-line interface
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1402,6 +1498,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to topology JSON file (or inline JSON string)",
     )
 
+    # ── catalog ───────────────────────────────────────────────────────────
+    p_catalog = subparsers.add_parser(
+        "catalog",
+        help="Export the appliance catalog as JSON (for the GNS3 profile onboarding UI)",
+    )
+
     return parser
 
 
@@ -1417,6 +1519,7 @@ COMMAND_MAP = {
     "validate": cmd_validate,
     "manifest": cmd_manifest,
     "brief": cmd_brief,
+    "catalog": cmd_catalog,
 }
 
 

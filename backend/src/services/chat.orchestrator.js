@@ -20,6 +20,7 @@ import aiEngine from './ai-engine.bridge.js';
 import { Session } from '../models/Session.js';
 import { Topology } from '../models/Topology.js';
 import { ExportJob } from '../models/Export.js';
+import { User } from '../models/User.js';
 import logger from '../utils/logger.js';
 import { LLMError, EngineError } from '../utils/errors.js';
 import fs from 'fs/promises';
@@ -94,9 +95,19 @@ function classifyIntent(userMessage) {
 // ═══════════════════════════════════════════════════════════
 const EMOJI_REGEX = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}\u{1F1E6}-\u{1F1FF}\u{1F900}-\u{1F9FF}\u{2300}-\u{23FF}\u{2190}-\u{21FF}\u{200D}\u{20E3}]/gu;
 
+/**
+ * Remove emojis from a text fragment.
+ *
+ * IMPORTANT: This runs on EACH streaming token delta, not the full message.
+ * Therefore it must NOT trim or collapse whitespace — the space between
+ * words arrives as a leading space on the NEXT token (e.g. "Hello!" then
+ * " What" then " would"). Trimming per-token would strip those leading
+ * spaces and concatenate into "Hello!Whatwould...". Only emoji characters
+ * are removed; all whitespace is preserved verbatim.
+ */
 function stripEmojis(text) {
   if (!text || typeof text !== 'string') return text;
-  return text.replace(EMOJI_REGEX, '').replace(/[ \t]{2,}/g, ' ').trim();
+  return text.replace(EMOJI_REGEX, '');
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -266,11 +277,44 @@ async function executeTool(sessionId, userId, toolName, args) {
     const outputDir = path.resolve(process.cwd(), 'output', sessionId);
     await fs.mkdir(outputDir, { recursive: true });
 
+    // ── Load the user's GNS3 calibration profile ──────────────────────
+    // This carries the user's environment capability (which backends are
+    // usable — IOU/QEMU/Docker) and their image map (templateName →
+    // installed image filename). Forwarding it to Python ensures:
+    //   (a) devices whose backend the user lacks are filtered out of the
+    //       inventory BEFORE the LLM sees them (preflight.filter_inventory),
+    //   (b) generated .gns3project files reference images the user
+    //       actually has (otherwise GNS3 refuses to open the project).
+    // See ai-engine/structranet/generation/preflight.py → PreflightProfile.
+    const user = await User.findById(userId).lean();
+    const p = user?.gns3Profile;
+    const imageMapObj = p?.imageMap;
+    const templateImageMap = imageMapObj && typeof imageMapObj === 'object'
+      ? Object.fromEntries(imageMapObj instanceof Map ? imageMapObj : Object.entries(imageMapObj))
+      : {};
+
+    // Build the full PreflightProfile dict expected by Python. Every field
+    // has a sensible default so this works even if the user skipped parts
+    // of the onboarding popup.
+    const profile = {
+      gns3_version: p?.gns3Version || '2.2',
+      supports_iou: p?.supportsIou ?? false,
+      supports_qemu: p?.supportsQemu ?? true,
+      supports_docker: p?.supportsDocker ?? false,
+      strict_validation: p?.strictValidation ?? true,
+      require_template_image_map: p?.requireTemplateImageMap ?? false,
+      template_image_map: templateImageMap,
+      security_profile: 'none',  // overridden by --security-profile arg
+    };
+
+    logger.debug(`[orchestrator] forwarding profile to Python: qemu=${profile.supports_qemu} iou=${profile.supports_iou} docker=${profile.supports_docker} images=${Object.keys(templateImageMap).length}`);
+
     if (toolName === 'generate_topology') {
       result = await aiEngine.generate({
         request: args.request,
         securityProfile: args.securityProfile || 'enterprise',
         outputDir,
+        profile,
       }, onEvent);
 
       const topology = await Topology.create({
@@ -313,6 +357,7 @@ async function executeTool(sessionId, userId, toolName, args) {
         originalRequest: session.originalRequest || topology.request,
         securityProfile: args.securityProfile || 'enterprise',
         outputDir,
+        profile,
       }, onEvent);
 
       const updated = await Topology.create({
@@ -355,6 +400,7 @@ async function executeTool(sessionId, userId, toolName, args) {
         topologyPath: topology.phase1File || path.resolve(outputDir, '_topology.json'),
         securityProfile: args.securityProfile || 'enterprise',
         outputDir,
+        profile,
       }, onEvent);
 
       const files = {

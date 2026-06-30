@@ -3,6 +3,8 @@ import { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useChatStore } from '../../stores/chatStore.js';
+import DownloadKit from './DownloadKit.jsx';
+import TopologyPreviewCard from './TopologyPreviewCard.jsx';
 
 /**
  * ConversationView — active conversation UI.
@@ -18,7 +20,7 @@ import { useChatStore } from '../../stores/chatStore.js';
 export default function ConversationView() {
   const {
     activeSessionId, messages, streamingText, isStreaming, activeTool,
-    sendMessage,
+    topology, exportKit, sendMessage,
   } = useChatStore();
 
   const [text, setText] = useState('');
@@ -107,6 +109,12 @@ export default function ConversationView() {
               <span>Thinking…</span>
             </div>
           )}
+
+          {/* ── Topology preview (after generation completes) ── */}
+          {topology && <TopologyPreviewCard topology={topology} />}
+
+          {/* ── Download kit (after export completes) ────── */}
+          {exportKit && <DownloadKit exportKit={exportKit} />}
         </div>
       </div>
 

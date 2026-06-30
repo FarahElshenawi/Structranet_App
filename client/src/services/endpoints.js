@@ -15,7 +15,9 @@ export const authApi = {
 export const profileApi = {
   get: () => api.get('/profile').then(r => r.data),
   update: (data) => api.put('/profile', data).then(r => r.data),
-  testConnection: (data) => api.post('/profile/test-connection', data).then(r => r.data),
+  // Fetch the full appliance catalog from the Python AI engine (SSOT).
+  // Used by the OnboardingModal to render a searchable device dropdown.
+  getCatalog: () => api.get('/profile/catalog').then(r => r.data),
 };
 
 export const sessionApi = {

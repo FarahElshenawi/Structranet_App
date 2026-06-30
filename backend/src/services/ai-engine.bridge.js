@@ -163,17 +163,25 @@ class AIEngineBridge {
 
   /**
    * generate — Phase 1: build topology from natural language.
+   *
+   * The optional `profile` object carries the user's GNS3 calibration
+   * (template_image_map, gns3_version, feature flags) so Python can
+   * emit image filenames that match the user's installed images.
    */
   async generate(params, onEvent = null) {
     const args = ['generate', '--request', params.request];
     if (params.securityProfile) args.push('--security-profile', params.securityProfile);
     if (params.outputDir) args.push('--output-dir', params.outputDir);
     if (params.chatHistory) args.push('--chat-history', JSON.stringify(params.chatHistory));
+    if (params.profile) args.push('--profile', JSON.stringify(params.profile));
     return this._spawn(args, this.defaultTimeout, onEvent);
   }
 
   /**
    * edit — Phase 1 (edit): modify existing topology with feedback.
+   *
+   * The optional `profile` object carries the user's GNS3 calibration
+   * (template_image_map) so regenerated topologies use the user's images.
    */
   async edit(params, onEvent = null) {
     const args = ['edit', '--feedback', params.feedback, '--topology', params.topologyPath];
@@ -181,16 +189,21 @@ class AIEngineBridge {
     if (params.originalRequest) args.push('--original-request', params.originalRequest);
     if (params.outputDir) args.push('--output-dir', params.outputDir);
     if (params.chatHistory) args.push('--chat-history', JSON.stringify(params.chatHistory));
+    if (params.profile) args.push('--profile', JSON.stringify(params.profile));
     return this._spawn(args, this.defaultTimeout, onEvent);
   }
 
   /**
    * export — Phase 2: generate configs + .gns3project file.
+   *
+   * The optional `profile` object carries the user's GNS3 calibration
+   * (template_image_map) so exported projects reference the user's images.
    */
   async exportProject(params, onEvent = null) {
     const args = ['export', '--topology', params.topologyPath];
     if (params.securityProfile) args.push('--security-profile', params.securityProfile);
     if (params.outputDir) args.push('--output-dir', params.outputDir);
+    if (params.profile) args.push('--profile', JSON.stringify(params.profile));
     return this._spawn(args, this.exportTimeout, onEvent);
   }
 
@@ -208,6 +221,19 @@ class AIEngineBridge {
   async validate(topologyPath, onEvent = null) {
     const args = ['validate', '--topology', topologyPath];
     return this._spawn(args, 60_000, onEvent);
+  }
+
+  /**
+   * catalog — export the appliance catalog as JSON.
+   *
+   * Returns the full APPLIANCE_CATALOG from Python (the single source of
+   * truth) so the frontend can render a searchable device dropdown in the
+   * GNS3 profile onboarding popup. Each entry includes template name,
+   * node_type, platform, category, default_image, and additional_images.
+   */
+  async catalog() {
+    const args = ['catalog'];
+    return this._spawn(args, 30_000, null);
   }
 }
 

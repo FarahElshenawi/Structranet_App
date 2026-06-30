@@ -1,25 +1,31 @@
 /**
  * Export routes — trigger export, download files.
+ *
+ * SECURITY NOTE: This file previously used `exec("zip -r \"${path}\"")` which
+ * was vulnerable to command injection if a path contained shell metacharacters.
+ * It now uses the `archiver` npm package, which streams ZIP output without
+ * spawning a shell — closing the injection vector and removing the dependency
+ * on a system `zip` binary.
+ *
+ * AUTH NOTE: The /download/:file endpoint is triggered by the browser via an
+ * <a download> click, which cannot set Authorization headers. So it uses
+ * `sseAuth` (accepts ?token= query param) instead of `requireAuth` (header
+ * only). This is the same pattern used by the SSE stream endpoint.
  */
 import { Router } from 'express';
 import { ExportJob } from '../models/Export.js';
-import { Session } from '../models/Session.js';
-import { Topology } from '../models/Topology.js';
-import { validate } from '../middleware/validate.js';
-import { exportSchemas } from '../middleware/schemas.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, sseAuth } from '../middleware/auth.js';
 import { NotFoundError, ForbiddenError } from '../utils/errors.js';
 import path from 'path';
 import fs from 'fs';
 import fsp from 'fs/promises';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import archiver from 'archiver';
 import logger from '../utils/logger.js';
 
-const execAsync = promisify(exec);
 const router = Router();
 
 // ── GET /api/export/:id/status ─────────────────────────────
+// Called via Axios (with Authorization header) — uses requireAuth.
 router.get('/:id/status', requireAuth, async (req, res, next) => {
   try {
     const job = await ExportJob.findById(req.params.id);
@@ -37,8 +43,18 @@ router.get('/:id/status', requireAuth, async (req, res, next) => {
 });
 
 // ── GET /api/export/:id/download/:file ─────────────────────
-// file: 'gns3project' | 'configs' | 'manifest' | 'all'
-router.get('/:id/download/:file', requireAuth, async (req, res, next) => {
+// file: 'gns3project' | 'configs' | 'manifest'
+//
+// Returns one of the three deployment artifacts:
+//  - gns3project: the importable .gns3project file (single file download)
+//  - configs:     a .zip of all device startup configs (one .cfg per device)
+//  - manifest:    the image-requirements checklist (.txt)
+//
+// AUTH: This endpoint is triggered by the browser via an <a download> click,
+// which cannot set Authorization headers. So it uses `sseAuth` (accepts
+// ?token= query param) instead of `requireAuth` (header only). The frontend
+// builds the URL with ?token=<jwt> in services/endpoints.js → exportApi.downloadUrl.
+router.get('/:id/download/:file', sseAuth, async (req, res, next) => {
   try {
     const job = await ExportJob.findById(req.params.id);
     if (!job) throw new NotFoundError('Export job not found');
@@ -51,48 +67,48 @@ router.get('/:id/download/:file', requireAuth, async (req, res, next) => {
 
     const fileType = req.params.file;
 
+    // ── gns3project: single file download ──────────────────
+    // .gns3project is a ZIP archive (GNS3 portable project format).
+    // Set explicit Content-Type + Content-Disposition so the browser
+    // downloads with the correct .gns3project extension (not .json or .zip).
     if (fileType === 'gns3project') {
       const p = job.files.gns3Project;
       if (!p || !fs.existsSync(p)) throw new NotFoundError('GNS3 project file not found');
-      return res.download(p, path.basename(p));
+      const fname = path.basename(p);
+      res.setHeader('Content-Type', 'application/gns3project');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fname)}"`);
+      return res.sendFile(path.resolve(p));
     }
 
+    // ── configs: zip the configs_review directory on the fly ──
+    // Uses archiver (no shell spawn) — closes the command-injection
+    // vulnerability that existed with `exec("zip -r ...")`.
     if (fileType === 'configs') {
-      // Zip the configs_review directory on the fly
       const dir = job.files.configsZip;
       if (!dir || !fs.existsSync(dir)) throw new NotFoundError('Configs directory not found');
-      const zipPath = path.join(path.dirname(dir), `${path.basename(dir)}.zip`);
-      try {
-        await execAsync(`zip -r "${zipPath}" "${dir}"`, { maxBuffer: 10 * 1024 * 1024 });
-      } catch {
-        // fallback: use powershell Compress-Archive on Windows or skip
-        try {
-          await execAsync(`powershell Compress-Archive -Path "${dir}\\*" -DestinationPath "${zipPath}" -Force`);
-        } catch (e2) {
-          throw new NotFoundError('Failed to create configs.zip');
-        }
-      }
-      return res.download(zipPath, 'configs.zip');
+
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="configs.zip"');
+
+      const archive = archiver('zip', { zlib: { level: 6 } });
+      archive.on('error', (err) => {
+        logger.error('archiver error (configs.zip):', err);
+        // Headers already sent — can only end the response
+        res.end();
+      });
+      archive.pipe(res);
+      archive.directory(dir, false);
+      archive.finalize();
+      return;
     }
 
+    // ── manifest: the image-requirements checklist ─────────
     if (fileType === 'manifest') {
       const p = job.files.manifest;
       if (!p || !fs.existsSync(p)) throw new NotFoundError('Manifest file not found');
-      return res.download(p, 'image_manifest.txt');
-    }
-
-    if (fileType === 'all') {
-      // Bundle everything into a single ZIP
-      const bundleDir = path.dirname(job.files.gns3Project || '.');
-      const zipPath = path.join(bundleDir, 'deployment_kit.zip');
-      try {
-        await execAsync(`zip -j "${zipPath}" "${job.files.gns3Project}"`, { maxBuffer: 10 * 1024 * 1024 });
-      } catch {
-        try {
-          await execAsync(`powershell Compress-Archive -Path "${job.files.gns3Project}" -DestinationPath "${zipPath}" -Force`);
-        } catch {}
-      }
-      return res.download(zipPath, 'deployment_kit.zip');
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="requirements.txt"');
+      return res.sendFile(path.resolve(p));
     }
 
     throw new NotFoundError('Unknown file type');

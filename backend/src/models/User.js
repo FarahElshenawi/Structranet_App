@@ -40,14 +40,31 @@ const userSchema = new mongoose.Schema({
     userAgent: String,
     _id: false,
   }],
-  // GNS3 calibration (saved during onboarding popup)
+  // GNS3 calibration (saved during onboarding popup).
+  //
+  // The user maps each device template (e.g. "Cisco 7200") to the image
+  // filename installed on their GNS3 server. This map is forwarded to the
+  // Python AI engine so generated .gns3project files reference images the
+  // user actually has — otherwise GNS3 refuses to open the project.
+  //
+  // The environment fields (gns3Version, supportsIou/Qemu/Docker) control
+  // which device types the LLM is allowed to pick from — devices whose
+  // backend the user lacks are filtered out of the inventory before the
+  // LLM ever sees them. See ai-engine/structranet/generation/preflight.py.
   gns3Profile: {
     isCalibrated: { type: Boolean, default: false },
-    server: {
-      host: { type: String, default: null },
-      port: { type: Number, default: null },
-    },
-    imageMap: { type: Map, of: String, default: {} },  // templateName → image filename
+
+    // ── Environment capability (collected in onboarding) ──────────────
+    gns3Version: { type: String, default: '2.2' },
+    supportsIou: { type: Boolean, default: false },
+    supportsQemu: { type: Boolean, default: true },
+    supportsDocker: { type: Boolean, default: false },
+    strictValidation: { type: Boolean, default: true },
+    requireTemplateImageMap: { type: Boolean, default: false },
+
+    // ── Image map (templateName → image filename) ─────────────────────
+    imageMap: { type: Map, of: String, default: {} },
+
     updatedAt: { type: Date, default: null },
   },
 }, {

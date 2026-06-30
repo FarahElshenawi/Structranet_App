@@ -1,37 +1,52 @@
 /**
- * Profile routes — GNS3 calibration.
+ * Profile routes — GNS3 image-map calibration + appliance catalog.
+ *
+ * The user's profile maps each device template (e.g. "Cisco 7200") to the
+ * image filename installed on their GNS3 server. This map is forwarded to
+ * the Python AI engine so generated .gns3project files reference images
+ * the user actually has — otherwise GNS3 refuses to open the project.
  */
 import { Router } from 'express';
 import { User } from '../models/User.js';
 import { validate } from '../middleware/validate.js';
 import { profileSchemas } from '../middleware/schemas.js';
 import { requireAuth } from '../middleware/auth.js';
-import { NotFoundError } from '../utils/errors.js';
+import { NotFoundError, EngineError } from '../utils/errors.js';
+import aiEngine from '../services/ai-engine.bridge.js';
+import logger from '../utils/logger.js';
 
 const router = Router();
 
 // ── GET /api/profile ───────────────────────────────────────
+// Returns the user's GNS3 calibration profile (imageMap + isCalibrated).
 router.get('/', requireAuth, async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id);
     if (!user) throw new NotFoundError('User not found');
-    res.json({ profile: user.gns3Profile || { isCalibrated: false } });
+    res.json({ profile: user.gns3Profile || { isCalibrated: false, imageMap: {} } });
   } catch (err) { next(err); }
 });
 
 // ── PUT /api/profile ───────────────────────────────────────
+// Save the user's GNS3 environment capability + image map. Marks the
+// profile as calibrated once saved (even an empty save = "skip" sets
+// isCalibrated=true so the onboarding popup does not reappear).
 router.put('/', requireAuth, validate(profileSchemas.update), async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id);
     if (!user) throw new NotFoundError('User not found');
 
-    if (req.body.gns3Server) {
-      user.gns3Profile.server = req.body.gns3Server;
+    const b = req.body;
+    if (b.gns3Version !== undefined) user.gns3Profile.gns3Version = b.gns3Version;
+    if (b.supportsIou !== undefined) user.gns3Profile.supportsIou = b.supportsIou;
+    if (b.supportsQemu !== undefined) user.gns3Profile.supportsQemu = b.supportsQemu;
+    if (b.supportsDocker !== undefined) user.gns3Profile.supportsDocker = b.supportsDocker;
+    if (b.strictValidation !== undefined) user.gns3Profile.strictValidation = b.strictValidation;
+    if (b.requireTemplateImageMap !== undefined) user.gns3Profile.requireTemplateImageMap = b.requireTemplateImageMap;
+    if (b.imageMap !== undefined) {
+      user.gns3Profile.imageMap = new Map(Object.entries(b.imageMap));
     }
-    if (req.body.imageMap) {
-      user.gns3Profile.imageMap = new Map(Object.entries(req.body.imageMap));
-    }
-    user.gns3Profile.isCalibrated = !!(user.gns3Profile.server?.host || user.gns3Profile.imageMap.size);
+    user.gns3Profile.isCalibrated = true;
     user.gns3Profile.updatedAt = new Date();
     await user.save();
 
@@ -39,21 +54,29 @@ router.put('/', requireAuth, validate(profileSchemas.update), async (req, res, n
   } catch (err) { next(err); }
 });
 
-// ── POST /api/profile/test-connection ──────────────────────
-router.post('/test-connection', requireAuth, validate(profileSchemas.testConnection), async (req, res, next) => {
+// ── GET /api/profile/catalog ───────────────────────────────
+// Returns the full appliance catalog from the Python AI engine (the single
+// source of truth for device definitions). The frontend uses this to render
+// a searchable dropdown of all supported devices in the onboarding popup,
+// so the user can map each template to their installed image filename.
+//
+// This endpoint spawns `python wrapper.py catalog` and returns the parsed
+// JSON. It is cached for 5 minutes on the client via the Axios interceptor
+// (see services/api.js) to avoid re-spawning Python on every modal open.
+router.get('/catalog', requireAuth, async (req, res, next) => {
   try {
-    const { host, port } = req.body;
-    // Simple TCP reachability check using fetch (GNS3 server exposes HTTP API)
-    const controller = globalThis.fetch ? globalThis.fetch : (await import('node-fetch')).default;
-    try {
-      const url = `http://${host}:${port}/v2/version`;
-      const r = await controller(url, { signal: AbortSignal.timeout(3000) });
-      const data = await r.json();
-      res.json({ reachable: true, version: data.version || 'unknown' });
-    } catch (err) {
-      res.json({ reachable: false, error: err.message });
+    const result = await aiEngine.catalog();
+    if (!result || !result.devices) {
+      throw new EngineError('Appliance catalog returned no devices');
     }
-  } catch (err) { next(err); }
+    logger.info(`Profile catalog served: ${result.count} devices`);
+    res.json({
+      count: result.count,
+      devices: result.devices,
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 export default router;

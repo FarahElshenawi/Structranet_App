@@ -2,34 +2,44 @@ import { PanelLeft, Plus } from 'lucide-react';
 import { useChatStore } from '../../stores/chatStore.js';
 
 /**
- * ChatTopBar — sleek top bar.
- * Shows "StructuraNet AI | Workspace" + AI Online status badge.
+ * ChatTopBar — fixed top bar (zinc + emerald status).
+ *
+ * Layout:
+ *  - Left: sidebar toggle + new chat button
+ *  - Center: session title (truncated)
+ *  - Right: status indicator (Ready / Generating / Streaming / Thinking)
  */
 export default function ChatTopBar({ sidebarOpen, onToggleSidebar, activeSessionId }) {
+  const sessions = useChatStore((s) => s.sessions);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const activeTool = useChatStore((s) => s.activeTool);
   const streamingText = useChatStore((s) => s.streamingText);
   const createSession = useChatStore((s) => s.createSession);
 
-  let statusText = 'AI Online';
-  let statusColor = 'bg-emerald-500';
+  // ── Determine status ────────────────────────────────────
+  let status = 'Ready';
+  let statusColor = 'bg-zinc-500';
 
   if (activeTool) {
-    statusText = 'Working';
-    statusColor = 'bg-emerald-500 animate-pulse';
+    status = 'Generating';
+    statusColor = 'bg-emerald-400 animate-pulse';
   } else if (isStreaming && streamingText) {
-    statusText = 'Streaming';
-    statusColor = 'bg-emerald-500 animate-pulse';
+    status = 'Streaming';
+    statusColor = 'bg-emerald-400 animate-pulse';
   } else if (isStreaming) {
-    statusText = 'Thinking';
-    statusColor = 'bg-emerald-500 animate-pulse';
+    status = 'Thinking';
+    statusColor = 'bg-emerald-400 animate-pulse';
   }
 
+  const activeSession = sessions.find((s) => s._id === activeSessionId);
+  const title = activeSession?.title || 'New Chat';
+
   return (
-    <header className="flex-shrink-0 h-14 border-b border-slate-200 bg-white/80 backdrop-blur-sm flex items-center px-3 gap-2 font-sans antialiased">
+    <header className="flex-shrink-0 h-14 border-b border-white/[0.06] bg-[#0f172a]/60 backdrop-blur-md flex items-center px-3 gap-2">
+      {/* ── Left: sidebar toggle + new chat ─────────────── */}
       <button
         onClick={onToggleSidebar}
-        className="p-2 rounded-xl text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+        className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
         title="Toggle sidebar (Ctrl/Cmd+B)"
         aria-label="Toggle sidebar"
       >
@@ -38,24 +48,24 @@ export default function ChatTopBar({ sidebarOpen, onToggleSidebar, activeSession
 
       <button
         onClick={() => createSession()}
-        className="p-2 rounded-xl text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+        className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
         title="New chat"
         aria-label="New chat"
       >
         <Plus size={18} />
       </button>
 
-      {/* Workspace title */}
-      <div className="flex-1 min-w-0 flex items-center gap-2">
-        <span className="text-sm font-medium text-slate-800">StructuraNet AI</span>
-        <span className="text-slate-300 text-sm">|</span>
-        <span className="text-sm text-slate-400">Workspace</span>
+      {/* ── Center: session title ───────────────────────── */}
+      <div className="flex-1 min-w-0 flex justify-center">
+        <span className="text-sm font-medium text-zinc-300 truncate max-w-md">
+          {title}
+        </span>
       </div>
 
-      {/* AI Online badge */}
-      <div className="flex items-center gap-2 rounded-xl bg-slate-100 border border-slate-200 px-3 py-1.5">
+      {/* ── Right: status indicator ─────────────────────── */}
+      <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800">
         <span className={`w-2 h-2 rounded-full ${statusColor}`} />
-        <span className="text-xs font-medium text-slate-600">{statusText}</span>
+        <span className="text-xs font-medium text-zinc-400">{status}</span>
       </div>
     </header>
   );

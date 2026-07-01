@@ -1,28 +1,27 @@
 # StructuraNet App
 
-**AI-powered Natural Language to GNS3 Topology Generator.** Describe your network in plain English and get a fully-configured, import-ready `.gns3project` file.
+**AI-powered Natural Language → GNS3 Topology Generator.** Describe your network in plain English and get a fully-configured, import-ready `.gns3project` file — complete with device configs, image requirements manifest, and a visual topology diagram.
 
 ---
 
 ## Architecture
 
-StructuraNet uses a **three-service architecture** with clear separation of concerns: a React frontend for the UI, an Express.js backend for auth/sessions/SSE orchestration, and a Python AI engine for heavy computation (topology generation, config generation, GNS3 export).
+Three-service architecture with clear separation of concerns:
 
 ```
-┌──────────────────────┐     HTTP/SSE      ┌──────────────────────┐   child_process    ┌──────────────────────┐
+┌──────────────────────┐     HTTP/SSE      ┌──────────────────────┐   stdin/stdout     ┌──────────────────────┐
 │   React + Vite       │ ←───────────────→  │   Express.js         │ ──────────────────→ │   Python AI Engine   │
-│   :5173              │     /api/*         │   :3000              │  python wrapper.py  │   (no HTTP server)   │
+│   :5173              │     /api/*         │   :3000              │   JSONL protocol    │   (persistent worker) │
 │                      │                    │                      │                     │                      │
 │  - Chat UI           │                    │  - JWT Auth          │                     │  - Phase 1: Topology │
-│  - SSE streaming     │                    │  - Chat persistence  │                     │  - Phase 2: Configs  │
+│  - SSE streaming     │                    │  - Session persistence│                    │  - Phase 2: Configs  │
 │  - Topology viewer   │                    │  - SSE Manager       │                     │  - GNS3 export       │
-│  - Auth pages        │                    │  - LLM orchestrator  │                     │  - Validation        │
-│                      │                    │  - File downloads    │                     │  - Cisco QA          │
+│  - Auth + Onboarding │                    │  - LLM orchestrator  │                     │  - Validation        │
+│  - PDF export        │                    │  - File downloads    │                     │  - Cisco QA          │
 └──────────────────────┘                    └──────┬───────────────┘                     └──────────────────────┘
                                                    │
                                             ┌──────▼───────┐
                                             │   MongoDB     │
-                                            │  (or in-mem)  │
                                             └──────────────┘
 ```
 
@@ -30,14 +29,12 @@ StructuraNet uses a **three-service architecture** with clear separation of conc
 
 | Decision | Rationale |
 |----------|-----------|
-| **No FastAPI server** | Express handles all REST/SSE endpoints natively. The old dead FastAPI proxy has been removed. Python is invoked only as a CLI child process. |
+| **Persistent Python worker** | Node.js spawns ONE long-running `python worker.py` process at first use. Heavy modules (OpenAI SDK, appliance catalog, hardware tables) are imported once and reused across all requests — eliminating the 2-4s cold-start penalty that per-request spawning paid. Communication is newline-delimited JSON (JSONL) over stdin/stdout with request IDs for matching. |
 | **LLM is the orchestrator** | No Finite State Machine. The LLM receives tool definitions and autonomously decides which tools to call, handling compound intents naturally. |
-| **Node.js ↔ Python via child_process** | Express spawns `python wrapper.py <command>` for heavy computation. JSON over stdout/stderr. Non-blocking — Node.js stays responsive. |
 | **Deterministic hardware, not LLM hardware** | The LLM outputs only node IDs and connections. Port numbers, slot modules, and hardware details are computed by Python. |
 | **Three-Gate Safe Merge** | Phase 2 LLM configs are merged through whitelist/no-overwrite/type gates, making it structurally impossible for the LLM to corrupt hardware properties. |
-| **MongoDB with in-memory fallback** | App remains functional for development without MongoDB. Session data falls back to an in-memory Map. |
-| **SSE over WebSocket** | Simpler, HTTP-compatible, works through proxies. EventSource auto-reconnects. JWT token passed as query param. |
-| **Input validation middleware** | All Express routes validate request bodies (required fields, types, minLength) before handlers run. |
+| **SSE over WebSocket** | Simpler, HTTP-compatible, works through proxies. EventSource auto-reconnects. JWT token passed as query param (for SSE/downloads only). |
+| **GNS3 image calibration** | Users map device templates to their locally-installed image filenames via a searchable onboarding popup. The map is forwarded to Python so generated `.gns3project` files reference images the user actually has. |
 
 ---
 
@@ -45,142 +42,112 @@ StructuraNet uses a **three-service architecture** with clear separation of conc
 
 ```
 structuranet_app/
-├── ai-engine/                  # Python AI pipeline (no HTTP server)
-│   ├── wrapper.py              # CLI bridge — Node.js spawns this via child_process
-│   ├── chat_cli.py             # Standalone conversational REPL (offline use)
+├── ai-engine/                          # Python AI pipeline (persistent worker)
+│   ├── worker.py                       # Persistent worker — JSONL over stdin/stdout
+│   ├── wrapper.py                      # CLI entry point (command handlers reused by worker)
 │   ├── requirements.txt
-│   ├── structranet/            # Main Python package (v4.0.0)
+│   ├── structranet/                    # Main Python package
 │   │   ├── ai/
 │   │   │   ├── agent.py                # Phase 1: LLM topology generation + auto-repair
-│   │   │   ├── chat_orchestrator.py    # Python LLM tool-calling orchestrator (standalone use)
 │   │   │   ├── config_agent.py         # Phase 2: Software config generation + safe-merge
 │   │   │   ├── context_builder.py      # Builds Configuration Brief from topology
 │   │   │   ├── llm_utils.py            # OpenAI client singleton, retry, JSON extraction
 │   │   │   ├── qa_handler.py           # Cisco IOS QA with knowledge base
 │   │   │   └── security_prompts.py     # Per-profile security prompt injection
 │   │   ├── catalog/
-│   │   │   ├── appliance_catalog.py    # Loads 40+ device catalog with user overlay
+│   │   │   ├── appliance_catalog.py    # Loads 45-device catalog with user overlay
 │   │   │   ├── hw_config.py            # Injects hardware (slots, adapters, ports)
 │   │   │   └── port_assigner.py        # Deterministic port number assignment
 │   │   ├── constants/
 │   │   │   ├── hardware.py             # SSOT: all hardware constants
-│   │   │   ├── gns3.py                 # Node types, symbols, port names
+│   │   │   ├── gns3.py                 # Node types, symbols, port names (SSOT for type sets)
 │   │   │   ├── schema.py               # Pydantic v2 models (GNS3Project, TopologyRequest)
-│   │   │   ├── appliances.py           # Static catalog data (40+ devices)
-│   │   │   ├── agent_schemas.py        # AgentSessionData, AgentResponse, TOOL_DEFINITIONS
+│   │   │   ├── appliances.py           # Static catalog data (45 devices)
 │   │   │   ├── ai.py                   # LLM link limits, retry config
-│   │   │   ├── phase2.py               # Phase 2 whitelist keys + type constraints
-│   │   │   └── validation.py           # Backward-compat re-exports
+│   │   │   └── phase2.py               # Phase 2 whitelist keys + type constraints
 │   │   ├── export/
 │   │   │   ├── gns3_exporter.py        # Converts topology → .gns3project ZIP
 │   │   │   └── validator.py            # 11-check structural validator
 │   │   ├── generation/
 │   │   │   ├── preflight.py            # Environment profile + inventory filtering
 │   │   │   └── topology_finalizer.py   # VLAN trunk/access port patcher
-│   │   └── knowledge/
-│   │       └── cisco_knowledge_base.txt
+│   │   ├── knowledge/
+│   │   │   └── cisco_knowledge_base.txt
+│   │   └── utils.py
 │   └── tests/
 │       └── test_golden_export.py
 │
-├── backend/                    # Express.js backend
-│   ├── index.js                # Express server — all routes, SSE, auth, sessions
+├── backend/                            # Express.js backend
 │   ├── package.json
-│   ├── models/
-│   │   ├── User.js             # Mongoose: user + gns3Profile (images Map)
-│   │   ├── chat.js             # Mongoose: messages with images, sessionId
-│   │   └── userChat.js         # Mongoose: chat list per user
-│   ├── services/
-│   │   ├── ai-engine.js        # Python bridge: spawn wrapper.py commands
-│   │   └── chat-orchestrator.js # LLM tool-calling orchestrator (Node.js)
-│   ├── tests/
-│   │   └── bridge.test.js      # Integration tests for Python-Node.js bridge
-│   └── tools/
-│       ├── agent-schemas.js    # AgentSessionData, AgentResponse classes
-│       └── definitions.js      # 4 OpenAI tool definitions
+│   ├── .env.example
+│   ├── scripts/
+│   │   └── test_worker_bridge.js       # Integration test for the persistent worker
+│   └── src/
+│       ├── app.js                      # Express app — middleware stack, route mounting
+│       ├── server.js                   # HTTP server + graceful shutdown
+│       ├── config/index.js             # Centralized config + env-var validation
+│       ├── middleware/
+│       │   ├── auth.js                 # requireAuth (header), sseAuth (query param)
+│       │   ├── validate.js             # Zod validation middleware
+│       │   └── schemas.js              # Zod schemas (auth, profile, session, message)
+│       ├── models/
+│       │   ├── User.js                 # User + gns3Profile (imageMap + capabilities)
+│       │   ├── Session.js              # Sessions with embedded messages
+│       │   ├── Topology.js             # Topology snapshots per session
+│       │   └── Export.js               # Export jobs + file paths
+│       ├── routes/
+│       │   ├── auth.routes.js          # /api/auth
+│       │   ├── profile.routes.js       # /api/profile
+│       │   ├── session.routes.js       # /api/sessions
+│       │   ├── topology.routes.js      # /api/topology
+│       │   └── export.routes.js        # /api/export
+│       ├── services/
+│       │   ├── ai-engine.bridge.js     # Persistent worker bridge (JSONL, request IDs)
+│       │   ├── chat.orchestrator.js    # LLM tool-calling orchestrator
+│       │   ├── auth.service.js         # Password hashing, JWT, refresh-token rotation
+│       │   └── sse.service.js          # SSE connection manager + keepalive
+│       └── utils/
+│           ├── errors.js               # AppError hierarchy + error handler
+│           └── logger.js               # Winston logger
 │
-└── client/                     # React + Vite frontend
-    ├── index.html
+└── client/                             # React + Vite frontend
     ├── package.json
-    ├── vite.config.js          # Proxy /api → localhost:3000
+    ├── .env.example
+    ├── index.html
+    ├── vite.config.js
+    ├── tailwind.config.js
     └── src/
-        ├── main.jsx            # React root with ErrorBoundary
-        ├── App.jsx             # Auth-gated router (Landing → Login → Chat)
-        ├── context/
-        │   └── AuthContext.jsx  # JWT auth state (localStorage)
-        ├── hooks/
-        │   └── useSSE.js       # SSE streaming hook (11 events + auto-reconnect)
-        ├── lib/
-        │   └── api.js          # All API calls + SSE subscription
+        ├── main.jsx
+        ├── App.jsx                     # Auth-gated router + onboarding modal
+        ├── index.css
         ├── pages/
-        │   ├── ChatPage.jsx    # Main chat UI (Claude-like experience)
+        │   ├── ChatPage.jsx
         │   ├── LandingPage.jsx
         │   ├── LoginPage.jsx
         │   └── RegisterPage.jsx
+        ├── stores/
+        │   ├── authStore.js            # Zustand: user, tokens, profile
+        │   └── chatStore.js            # Zustand: sessions, messages, SSE, topology, exportKit
+        ├── services/
+        │   ├── api.js                  # Axios + interceptors (refresh queue)
+        │   ├── endpoints.js            # API wrappers (auth, profile, session, topology, export)
+        │   └── sse.js                  # SSEManager — EventSource + auto-reconnect
         └── components/
-            ├── ErrorBoundary.jsx
-            ├── GenerationProgress.jsx
-            ├── Icons.jsx
-            ├── MiniTopologyPreview.jsx
-            ├── NetworkLoader.jsx
-            ├── ProfileDrawer.jsx
-            ├── ProfileModal.jsx
-            ├── RequirementsPanel.jsx
-            ├── SummaryPanel.jsx
-            ├── ThoughtStream.jsx
-            └── TopologyViewer.jsx
-```
-
----
-
-## Data Flow
-
-### End-to-End: From Prompt to Download
-
-```
-User: "Design a 3-branch enterprise network"
-  │
-  ▼  ChatPage.jsx → POST /api/chat { session_id, message }
-  │
-  ▼  Express index.js:
-      1. JWT auth check (requireAuth middleware)
-      2. Input validation (validateBody middleware)
-      3. Load/create AgentSessionData from MongoDB (SessionStore)
-      4. Call chat-orchestrator.dispatch(message, session, SSEManager)
-  │
-  ▼  chat-orchestrator.js:
-      1. Append user message to conversation history
-      2. Build context-aware system prompt (topology state, edit count)
-      3. Call LLM with messages + 4 tool definitions (tool_choice: "auto")
-      4. LLM decides → calls generate_new_topology(requirements="...")
-  │
-  ▼  _toolGenerateNewTopology():
-      1. SSE broadcast: phase_change → generating
-      2. Spawn: python wrapper.py generate --request "3-branch enterprise..."
-         (ai-engine.js → child_process.spawn → non-blocking)
-      3. Python runs Phase 1:
-         LLM call → auto-repair → port assignment → hardware injection
-         → VLAN patching → validation
-      4. Python prints JSON to stdout → Node.js parses it
-      5. SSE broadcast: topology_ready, requirements_ready, summary_ready
-      6. SSE broadcast: phase_change → review
-  │
-  ▼  Back in orchestrator loop:
-      LLM sees tool result → responds with text describing topology
-  │
-  ▼  User clicks "Approve & Export" with enterprise security
-      ChatPage → POST /api/chat { message: "approve with enterprise security" }
-  │
-  ▼  LLM decides → calls apply_security_and_export(security_profile="enterprise")
-  │
-  ▼  _toolApplySecurityAndExport():
-      1. Spawn: python wrapper.py export --topology ... --security-profile enterprise
-      2. Python runs Phase 2:
-         config brief → LLM configs → safe-merge (3-gate)
-         → GNS3 export → 11-check validation
-      3. SSE broadcast: config_text (streamed in 80-char chunks per device)
-      4. SSE broadcast: complete { download_url, validator_passed, ... }
-  │
-  ▼  User clicks download → GET /api/ai/sessions/:id/download → .gns3project file
+            ├── auth/
+            │   └── OnboardingModal.jsx     # GNS3 image calibration popup
+            ├── chat/
+            │   ├── ChatLayout.jsx          # Root chat container
+            │   ├── ChatTopBar.jsx
+            │   ├── Sidebar.jsx             # Session list + profile popover
+            │   ├── ConversationView.jsx    # Messages + streaming + code blocks + copy buttons
+            │   ├── DownloadKit.jsx         # 3 download buttons (gns3project, configs, manifest)
+            │   ├── TopologyPreviewCard.jsx # Inline topology preview + "View full" button
+            │   ├── EmptyState.jsx
+            │   └── ActionChipsBar.jsx
+            ├── topology/
+            │   ├── TopologyFullCanvas.jsx  # Full-screen: hierarchical layout, draggable, PDF export
+            │   └── topologyLayout.js       # Shared 6-tier hierarchical layout + colors
+            └── landing/                    # Marketing page components (10 files)
 ```
 
 ---
@@ -191,7 +158,7 @@ User: "Design a 3-branch enterprise network"
 
 - **Node.js** 18+ and npm
 - **Python** 3.11+ (uses `match` syntax, `type X = Y` annotations)
-- **MongoDB** (optional — the app falls back to in-memory storage for development)
+- **MongoDB** (required)
 - An **OpenAI-compatible API key** (OpenRouter, OpenAI, etc.)
 
 ### 1. Python AI Engine
@@ -203,15 +170,16 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Create a `.env` file in `ai-engine/`:
+Create `.env` in `ai-engine/`:
 ```env
 ROUTER_API_KEY=your-openrouter-or-openai-key
-ROUTER_BASE_URL=https://openrouter.ai/api/v1   # optional, default: OpenAI
-AI_MODEL=openrouter/owl-alpha                   # any OpenAI-compatible model
+ROUTER_BASE_URL=https://openrouter.ai/api/v1   # optional
+AI_MODEL=openrouter/owl-alpha                   # optional, any OpenAI-compatible model
 AI_MAX_TOKENS=16384                             # optional
+LLM_CALL_TIMEOUT=120                            # optional, per-call timeout in seconds
 ```
 
-> **Note:** The Python AI engine does **not** run a server. It is invoked by the Node.js backend via `child_process.spawn("python", ["wrapper.py", ...])`. You do not need to start `uvicorn` or any Python HTTP server.
+> The Python AI engine does **not** run a server. It is invoked by the Node.js backend via a persistent worker process (`worker.py`) communicating over stdin/stdout JSONL.
 
 ### 2. Express.js Backend
 
@@ -220,25 +188,35 @@ cd backend
 npm install
 ```
 
-Create a `.env` file in `backend/`:
+Create `.env` in `backend/` (see `.env.example`):
 ```env
-JWT_SECRET=<generate with: openssl rand -hex 32>
-MONGO=mongodb://localhost:27017/structuranet    # optional
-PORT=3000                                        # optional
-CORS_ORIGIN=https://your-frontend-domain.com     # optional (dev: allow all)
-ROUTER_API_KEY=your-openrouter-or-openai-key     # for Node.js LLM calls
-ROUTER_BASE_URL=https://openrouter.ai/api/v1     # optional
-AI_MODEL=openrouter/owl-alpha                    # optional
-OUTPUT_DIR=/tmp/structuranet                     # optional
-STRUCTRANET_WRAPPER_PATH=../ai-engine/wrapper.py # optional
-STRUCTRANET_PYTHON=python                        # optional
+PORT=3000
+NODE_ENV=development
+CLIENT_URL=http://localhost:5173
+
+MONGO=mongodb://localhost:27017/structuranet
+
+JWT_SECRET=<openssl rand -hex 32>
+JWT_REFRESH_SECRET=<openssl rand -hex 32>
+JWT_ACCESS_EXPIRY=15m
+JWT_REFRESH_EXPIRY=7d
+
+ROUTER_API_KEY=your-openrouter-or-openai-key
+ROUTER_BASE_URL=https://openrouter.ai/api/v1
+AI_MODEL=openrouter/owl-alpha
+AI_MAX_TOKENS=16384
+
+WRAPPER_PATH=../ai-engine/wrapper.py
+PYTHON_BIN=python
+OUTPUT_DIR=./output
 ```
 
-> **Important:** `JWT_SECRET` is **required**. The server will start without it but all auth endpoints will return 500 errors.
+> `JWT_SECRET` and `JWT_REFRESH_SECRET` are **required**.
 
 Start the server:
 ```bash
-npm start
+npm start          # production
+npm run dev        # development (auto-restart on file changes)
 ```
 
 ### 3. React + Vite Client
@@ -249,245 +227,158 @@ npm install
 npm run dev
 ```
 
-The client runs on `http://localhost:5173` and proxies all `/api/*` requests to Express on port 3000 (configured in `vite.config.js`).
+Runs on `http://localhost:5173`, proxies `/api/*` to Express on port 3000.
 
 ---
 
 ## API Reference
 
-### Authentication
+### Authentication (`/api/auth`)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/auth/signup` | Create account (username, email, password) |
-| POST | `/api/auth/signin` | Login (email, password) → returns JWT |
-| POST | `/api/auth/demo` | Demo login (no credentials needed) |
+| POST | `/api/auth/register` | Create account `{ email, password, name }` |
+| POST | `/api/auth/login` | Login `{ email, password }` |
+| POST | `/api/auth/refresh` | Refresh access token `{ refreshToken }` |
+| GET | `/api/auth/me` | Get current user |
+| POST | `/api/auth/logout` | Revoke refresh token |
 
-### Chat (LLM Tool-Calling)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/chat` | Main chat endpoint — dispatches to LLM orchestrator |
-| GET | `/api/ai/sessions/:id/events` | SSE stream for real-time events |
-
-The `POST /api/chat` endpoint is the core interaction point. It accepts `{ session_id?, message }` and returns `{ session_id, message, tool_calls_made }`. Real-time progress is streamed via SSE events on the sessions events endpoint.
-
-### Session Management
+### Profile (`/api/profile`)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/ai/sessions` | Create new session |
-| GET | `/api/ai/sessions/:id` | Get session info |
-| GET | `/api/ai/sessions/:id/download` | Download .gns3project file |
-| GET | `/api/ai/sessions/:id/download/requirements` | Download requirements manifest |
-| GET | `/api/ai/health` | Health check |
+| GET | `/api/profile` | Get GNS3 calibration profile |
+| PUT | `/api/profile` | Update profile (version, capabilities, imageMap) |
+| GET | `/api/profile/catalog` | Fetch 45-device appliance catalog (for onboarding dropdown) |
 
-### Chat History
+### Sessions (`/api/sessions`)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/chats` | Create chat |
-| GET | `/api/userchats` | List user's chats |
-| GET | `/api/chats/:id` | Get chat messages |
-| POST | `/api/chats/:id/messages` | Add messages |
-| DELETE | `/api/chats/:id` | Delete chat |
-| PUT | `/api/chats/:id/session` | Link chat to AI session |
+| GET | `/api/sessions` | List user's sessions |
+| POST | `/api/sessions` | Create new session |
+| GET | `/api/sessions/:id` | Get session with messages + topology + export job |
+| PATCH | `/api/sessions/:id/title` | Update session title |
+| DELETE | `/api/sessions/:id` | Delete session |
+| GET | `/api/sessions/:id/stream` | SSE stream (`?token=<JWT>`) |
+| POST | `/api/sessions/:id/messages` | Send message `{ content }` → 202, orchestrator runs in background |
 
-### Profile
+### Export (`/api/export`)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/profile` | Get GNS3 environment profile |
-| PUT | `/api/profile` | Update profile (version, features, images, security_profile) |
+| GET | `/api/export/:id/status` | Get export job status |
+| GET | `/api/export/:id/download/:file` | Download file (`gns3project` \| `configs` \| `manifest`) — `?token=<JWT>` |
 
 ---
 
-## Environment Variables
-
-### Python AI Engine (`ai-engine/.env`)
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `ROUTER_API_KEY` | **Yes** | — | OpenAI/OpenRouter API key for LLM calls |
-| `ROUTER_BASE_URL` | No | OpenAI | API base URL |
-| `AI_MODEL` | No | `openrouter/owl-alpha` | LLM model identifier |
-| `AI_MAX_TOKENS` | No | `16384` | Max tokens per LLM call |
-| `LLM_CALL_TIMEOUT` | No | `120` | Per-call timeout in seconds |
-| `STRUCTRANET_OUTPUT_DIR` | No | `output` | CLI pipeline output path |
-| `QA_KNOWLEDGE_BASE_PATH` | No | built-in | Path to Cisco knowledge base file |
-
-### Express Backend (`backend/.env`)
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `JWT_SECRET` | **Yes** | — | Secret for JWT token signing (no fallback) |
-| `MONGO` | No | — | MongoDB connection string (falls back to in-memory) |
-| `PORT` | No | `3000` | Express server port |
-| `CORS_ORIGIN` | No | allow all | Comma-separated allowed origins (production) |
-| `ROUTER_API_KEY` | No | — | API key for Node.js LLM orchestrator |
-| `ROUTER_BASE_URL` | No | — | API base URL for Node.js LLM calls |
-| `AI_MODEL` | No | `openai/gpt-oss-120b:free` | LLM model for orchestrator |
-| `AI_MAX_TOKENS` | No | `4096` | Max tokens per Node.js LLM call |
-| `OUTPUT_DIR` | No | `/tmp/structuranet` | Output directory for generated files |
-| `STRUCTRANET_WRAPPER_PATH` | No | `../../ai-engine/wrapper.py` | Path to Python wrapper |
-| `STRUCTRANET_PYTHON` | No | `python` | Python binary name |
-
-### React Client
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `VITE_API_URL` | No | — | Legacy — actual proxy goes through Vite to Express |
-
----
-
-## Python-Node.js Bridge
-
-The Node.js backend communicates with the Python AI engine through a **child_process bridge**, not HTTP:
+## Node.js ↔ Python Bridge (Persistent Worker)
 
 ```
-Express (chat-orchestrator.js)
+Express (chat.orchestrator.js)
   │
-  │  Tool handler needs heavy computation
-  │
-  ▼
-ai-engine.js: spawn("python", ["wrapper.py", "generate", "--request", "..."])
+  │  {"id":"<uuid>","command":"generate","args":{...}}\n   ──▶ stdin
   │
   ▼
-wrapper.py: Runs Phase 1/2 pipeline, prints JSON to stdout
+worker.py (long-running): processes request, streams events
+  │  {"id":"<uuid>","event":"thought","data":{...}}\n        ◀── stdout (streamed)
+  │  {"id":"<uuid>","ok":true,"result":{...}}\n              ◀── stdout (final)
   │
   ▼
-ai-engine.js: Parses JSON from stdout, returns to orchestrator
+ai-engine.bridge.js: matches response by ID, resolves promise
 ```
 
-### Commands
-
-| Command | Description | Used By |
-|---------|-------------|---------|
-| `generate` | Phase 1 topology generation | `generate_new_topology` tool |
-| `edit` | Phase 1 edit with feedback | `modify_current_topology` tool |
-| `export` | Phase 2 + GNS3 export | `apply_security_and_export` tool |
-| `qa` | Cisco knowledge base search | `search_cisco_knowledge` tool |
-| `brief` | Configuration brief (debug) | Manual use |
-| `validate` | Schema validation | Manual use |
-| `manifest` | Image requirements checklist | Manual use |
-
-### Communication Contract
-
-- **Success**: Python prints exactly one JSON object to **stdout**, exits with code 0.
-- **Failure**: Python prints a JSON error to **stderr**, exits with code 1.
-- **Timeouts**: Node.js kills the process after 5 minutes (10 minutes for export).
-- **No HTTP**: Python never opens a port. All communication is stdin/stdout/stderr.
+- **Protocol:** Newline-delimited JSON (JSONL) over stdin/stdout
+- **Request IDs:** Every request tagged with `crypto.randomUUID()`; worker includes the same ID in every event and response
+- **Worker lifecycle:** Spawned once at first use; stays alive until Node exits; auto-respawns after crash
+- **Error recovery:** Command errors return `{ok:false}` and the worker stays alive; crashes reject all pending requests immediately
+- **Resource reuse:** OpenAI client, appliance catalog, hardware tables loaded once at startup
+- **Concurrency:** Sequential processing (one command at a time) — deliberate architectural choice for simplicity
 
 ---
 
 ## SSE Event Types
 
-The frontend subscribes to SSE events via `GET /api/ai/sessions/:id/events?token=JWT` and handles 11 event types:
-
 | Event | Data | Description |
 |-------|------|-------------|
-| `phase_change` | `{ phase, sub_phase }` | Pipeline phase transition |
-| `thought` | `{ type, text }` | AI reasoning (understanding/decision/assumption/warning) |
-| `topology_ready` | `{ nodes, links, ... }` | Topology draft available for review |
-| `requirements_ready` | `[ { name, image_required, ... } ]` | Image requirements manifest |
-| `summary_ready` | `{ thinking_text, design_review, assumptions }` | Design review summary |
-| `phase2_progress` | `{ status }` | Phase 2 progress update |
-| `export_progress` | `{ status }` | Export progress update |
-| `config_text` | `{ device_name, chunk, start, done }` | Streamed device config text |
-| `agent_message` | `{ message, tool_calls_made }` | Final LLM text response |
-| `complete` | `{ download_url, validator_passed, ... }` | Generation complete |
+| `tool_start` | `{ tool, args }` | Tool execution started |
+| `tool_progress` | `{ step, thoughtType }` | Progress update / thought |
+| `tool_result` | `{ tool, success, summary }` | Tool finished |
+| `topology_ready` | `{ topologyId, topology_dict, ... }` | Topology available for review |
+| `deployment_ready` | `{ exportId, files, securityProfile, validation }` | Export complete |
+| `token_delta` | `{ token }` | Streamed LLM text token |
+| `agent_message` | `{ message }` | Final LLM text response |
+| `complete` | `{ ... }` | Generation complete |
 | `error` | `{ message }` | Error occurred |
-| `keepalive` | `{}` | Connection keepalive tick |
-
-### Frontend SSE State Machine
-
-```
-idle → generating(thinking) → generating(building) → review
-     → exporting(finalizing) → exporting(streaming_configs) → success | error
-```
+| `keepalive` | `{}` | Connection keepalive |
 
 ---
 
-## LLM Tool-Calling Architecture
+## LLM Tool-Calling
 
-The chat orchestrator uses OpenAI function calling (no FSM). The LLM receives 4 tool definitions and decides autonomously what to call:
+The orchestrator uses OpenAI function calling (no FSM). 4 tools, up to 6 rounds per message:
 
-| Tool | When Called | What It Does |
-|------|------------|--------------|
-| `generate_new_topology(requirements)` | User wants a new design | Spawns Python for Phase 1 |
-| `modify_current_topology(feedback)` | User wants edits to existing topology | Spawns Python for Phase 1 edit |
-| `apply_security_and_export(security_profile)` | User approves and wants export | Spawns Python for Phase 2 + export |
-| `search_cisco_knowledge(topic)` | User asks Cisco IOS question | Spawns Python for QA search |
+| Tool | When | What |
+|------|------|------|
+| `generate_new_topology(requirements)` | New design | Sends `generate` to Python worker |
+| `modify_current_topology(feedback)` | Edit existing | Sends `edit` to Python worker |
+| `apply_security_and_export(security_profile)` | Approve & export | Sends `export` to Python worker |
+| `search_cisco_knowledge(topic)` | Cisco question | Sends `qa` to Python worker |
 
-The tool-calling loop runs up to **6 rounds** per user message with conversation history capped at **30 turns**. This naturally handles compound intents (e.g., "design X and apply enterprise security" in one message) without a state machine.
+---
+
+## GNS3 Image Calibration
+
+A `.gns3project` file references specific image filenames. GNS3 refuses to open the project unless those images are installed. The onboarding popup (shown after sign-in, re-openable from Settings) lets users:
+
+1. **Pick GNS3 version** — dropdown
+2. **Toggle capabilities** — QEMU / IOU / Docker / Strict validation (filters which device types the LLM can use)
+3. **Map devices to images** — pick devices one at a time from the 45-device catalog, type the image filename from their GNS3 install
+
+The profile is forwarded to Python as `--profile { template_image_map, supports_iou, ... }`, so generated projects reference images the user actually has.
 
 ---
 
 ## Security Profiles
 
-Three profiles are available, selected per session:
-
 | Profile | What It Adds |
 |---------|--------------|
-| `none` | No hardening. Pure lab topology. Maximum compatibility. |
-| `basic` | SSH v2, AAA local, service timestamps, login block, NTP, Syslog, no SNMP community strings, MOTD banner. Applied to every router. |
-| `enterprise` | Everything in `basic` plus: Zone-Based Firewall (ZBF), anti-spoofing ACLs, TCP intercept, NAT PAT overload, OSPF MD5 authentication, HSRP, SNMPv3 (auth+priv), DHCP snooping, DAI, STP BPDU guard, port security, uRPF. Applied per security role. |
-
-Security prompts are injected at both Phase 1 (topology design) and Phase 2 (config generation) via `security_prompts.py`. The project name in the exported file never contains security keywords.
-
----
-
-## Safety Features
-
-### Backend
-
-- **Input validation middleware**: All Express routes validate request bodies (required fields, types, minLength) before handlers run.
-- **JWT with no fallback**: `JWT_SECRET` must come from environment — there is no hardcoded default.
-- **CORS restriction**: Production deployments must set `CORS_ORIGIN`; development allows all origins.
-- **Session persistence**: `AgentSessionData` is persisted to MongoDB with in-memory fallback.
-- **SSE keepalive**: Prevents proxy/load-balancer timeout on idle connections.
-- **Tool round limit**: Maximum 6 LLM tool-calling rounds per user message (prevents infinite loops).
-
-### Frontend
-
-- **Error boundaries**: Both app-level and chat-level error boundaries catch render crashes.
-- **3-minute safety timeout**: Auto-error if no SSE events received within 3 minutes.
-- **Auto-reconnect**: SSE connections auto-reconnect with exponential backoff (up to 5 attempts, 1s to 15s).
-- **Last-Event-ID**: On reconnection, EventSource sends the last event ID for replay.
-
-### Python AI Engine
-
-- **Auto-repair pipeline**: Removes duplicate connections, fixes single-port violations, bridges disconnected graph groups.
-- **Three-Gate Safe Merge**: Phase 2 LLM configs pass through whitelist/no-overwrite/type gates.
-- **Deterministic hardware**: Port numbers and hardware details are computed by Python, never by the LLM.
-- **11-check structural validator**: Deep validation of exported `.gns3project` files.
+| `none` | No hardening. Pure lab topology. |
+| `basic` | SSH v2, AAA local, timestamps, login block, NTP, Syslog, MOTD banner |
+| `enterprise` | Basic + ZBF, anti-spoofing ACLs, TCP intercept, NAT PAT, OSPF MD5, HSRP, SNMPv3, DHCP snooping, DAI, STP BPDU guard, port security, uRPF |
 
 ---
 
 ## Features
 
-- **Natural Language Input**: Describe your network in plain English
-- **AI-Powered Generation**: LLM generates complete topology with device configs
-- **Real-Time Progress**: SSE streaming shows AI thinking, decisions, and assumptions
-- **Interactive Topology View**: SVG graph visualization of nodes and links
-- **Design Review**: AI summarizes design decisions and assumptions
-- **Requirements Manifest**: Table showing all required appliances and images
-- **Edit & Iterate**: Request changes to the topology before exporting
-- **GNS3 Export**: Download ready-to-import .gns3project files
-- **Session Persistence**: Sessions survive server restarts (MongoDB-backed)
-- **Demo Mode**: Try the app without creating an account
-- **Security Profiles**: None / Basic / Enterprise hardening for Cisco devices
-- **Cisco QA**: Ask questions about Cisco IOS commands and protocols
+### Core
+- **Natural Language Input** — describe your network in plain English
+- **AI-Powered Generation** — LLM generates complete topology with device configs
+- **Real-Time Progress** — SSE streaming shows AI thinking and tool execution
+- **Interactive Topology Viewer** — 6-tier hierarchical layout (NAT → Firewall → Router → Switch → Server → Endpoint), draggable nodes, click-to-inspect, light/dark mode, PDF export
+- **Edit & Iterate** — request changes before exporting
+- **GNS3 Export** — download `.gns3project`, `configs.zip`, `requirements.txt`
+- **Session Persistence** — sessions, topologies, export jobs survive restarts (MongoDB)
+- **Security Profiles** — None / Basic / Enterprise
+- **Cisco QA** — ask Cisco IOS questions
+
+### UI/UX
+- **Streaming Chat** — token-by-token streaming with tool indicators
+- **Stop Button** — click send while streaming to stop generation
+- **Copy Buttons** — copy any code block or entire assistant message
+- **GNS3 Image Calibration** — searchable device picker, capability toggles
+- **Topology PDF Export** — high-quality PDF with dynamic bounding box
+- **Light/Dark Mode** — toggle in the full topology viewer
 
 ---
 
 ## Running Tests
 
-### Backend (Node.js)
+### Backend
 
 ```bash
 cd backend
-npx jest tests/ --verbose
+JWT_SECRET=x JWT_REFRESH_SECRET=x MONGO=mongodb://localhost/dummy node scripts/test_worker_bridge.js
 ```
 
 ### Python AI Engine

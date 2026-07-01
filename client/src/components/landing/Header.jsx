@@ -45,8 +45,8 @@ export default function Header() {
         {/* Center nav links */}
         <div className="hidden md:flex items-center gap-8 text-sm">
           <a href="#how-it-works" className="text-navy-300 hover:text-brand-400 transition-colors">How it works</a>
-          <a href="#catalog" className="text-navy-300 hover:text-brand-400 transition-colors">Catalog</a>
-          <a href="#architecture" className="text-navy-300 hover:text-brand-400 transition-colors">Architecture</a>
+          <a href="#use-cases" className="text-navy-300 hover:text-brand-400 transition-colors">Use cases</a>
+          <a href="#catalog" className="text-navy-300 hover:text-brand-400 transition-colors">Devices</a>
         </div>
 
         {/* CTAs */}

@@ -1,11 +1,12 @@
 /**
- * StatsStrip — 4 stats on dark navy background with emerald gradient numbers.
+ * StatsStrip — 4 product-focused stats.
+ * No internal implementation details — just what the user gets.
  */
 const STATS = [
-  { value: '45',     label: 'Devices Supported',  sublabel: 'Dynamips · QEMU · IOU · Docker' },
+  { value: '45+',    label: 'Device Models',     sublabel: 'Cisco · Juniper · Arista · and more' },
   { value: '3',      label: 'Security Profiles',  sublabel: 'None · Basic · Enterprise' },
-  { value: '11',     label: 'Validation Checks',  sublabel: 'Structural · Schema · Integrity' },
-  { value: '1,127',  label: 'Cisco IOS KB Lines', sublabel: 'All 7 OSI layers' },
+  { value: '∞',      label: 'Network Designs',    sublabel: 'Describe anything — we build it' },
+  { value: '1-Click', label: 'GNS3 Export',       sublabel: 'Import and run immediately' },
 ];
 
 export default function StatsStrip() {

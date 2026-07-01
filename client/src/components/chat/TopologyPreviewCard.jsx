@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { Network, Maximize2, Check } from 'lucide-react';
 import TopologyFullCanvas from '../topology/TopologyFullCanvas.jsx';
+import { computeHierarchicalLayout, getNodeColor } from '../topology/topologyLayout.js';
 
 /**
  * TopologyPreviewCard — inline topology summary shown in the conversation
@@ -8,13 +9,11 @@ import TopologyFullCanvas from '../topology/TopologyFullCanvas.jsx';
  *
  * Renders a compact card with:
  *  - Topology name + device/link counts
- *  - A mini SVG preview (first ~12 nodes laid out in a circle)
+ *  - A mini SVG preview using a HIERARCHICAL LAYERED layout (NAT/FW at top →
+ *    routers → switches → PCs at bottom) so connections flow downward with
+ *    minimal crossings — readable, not a hairball.
  *  - A "View full topology" button that opens TopologyFullCanvas (full-screen
- *    d3-force modal with zoom/pan/click-to-inspect)
- *
- * Reads `chatStore.topology` which is populated by the SSE `topology_ready`
- * event. The data shape is { topologyId, topology_dict, topology_data, ... }
- * where topology_dict.topology.nodes/links is the nested GNS3 structure.
+ *    modal with the same hierarchical layout + zoom/pan/click-to-inspect).
  */
 export default function TopologyPreviewCard({ topology }) {
   const [showFull, setShowFull] = useState(false);
@@ -28,43 +27,27 @@ export default function TopologyPreviewCard({ topology }) {
     [topology]
   );
 
+  // Compute hierarchical layout for the mini preview (compact 200x140 canvas)
+  const layout = useMemo(
+    () => computeHierarchicalLayout(nodes, links, {
+      width: 200,
+      height: 140,
+      nodeWidth: 0,   // not used for positioning in mini (we just need centers)
+      nodeHeight: 0,
+    }),
+    [nodes, links]
+  );
+
   if (!topology || nodes.length === 0) return null;
 
   const name = topology?.topology_data?.name || topology?.name || 'Topology';
   const nodeCount = topology?.topology_data?.node_count || nodes.length;
   const linkCount = topology?.topology_data?.link_count || links.length;
 
-  // ── Mini preview layout: arrange first 12 nodes in a circle ──
-  const previewNodes = nodes.slice(0, 12);
-  const radius = 38;
-  const cx = 50, cy = 50;
-  const positioned = previewNodes.map((n, i) => {
-    const angle = (i / Math.max(previewNodes.length, 1)) * Math.PI * 2 - Math.PI / 2;
-    return {
-      ...n,
-      px: cx + radius * Math.cos(angle),
-      py: cy + radius * Math.sin(angle),
-    };
-  });
-  const previewLinks = links.slice(0, 20).map(l => {
-    const a = l.nodes?.[0]?.node_id;
-    const b = l.nodes?.[1]?.node_id;
-    const na = positioned.find(n => n.node_id === a);
-    const nb = positioned.find(n => n.node_id === b);
-    return na && nb ? { x1: na.px, y1: na.py, x2: nb.px, y2: nb.py } : null;
-  }).filter(Boolean);
-
-  // ── Node type color (mirrors TopologyFullCanvas) ──────────
-  function color(node) {
-    const t = (node.node_type || '').toLowerCase();
-    const n = (node.name || '').toLowerCase();
-    if (t.includes('router') || n.match(/^r\d/)) return '#3b82f6';
-    if (t.includes('firewall') || n.includes('fw')) return '#ef4444';
-    if (t.includes('nat') || n.includes('nat')) return '#f59e0b';
-    if (t.includes('switch') || n.startsWith('sw')) return '#22d3ee';
-    if (t.includes('vpcs') || t.includes('pc') || n.startsWith('pc')) return '#94a3b8';
-    return '#64748b';
-  }
+  // Scale the layout (which was computed for 200x140) to fit the 96x96 box
+  // with a small margin.
+  const scaleX = 96 / 200;
+  const scaleY = 96 / 140;
 
   return (
     <>
@@ -82,24 +65,34 @@ export default function TopologyPreviewCard({ topology }) {
 
         {/* Body: mini preview + stats + button */}
         <div className="flex items-center gap-4 px-4 py-3">
-          {/* Mini SVG preview */}
-          <div className="flex-shrink-0 w-24 h-24 rounded-lg bg-zinc-950 border border-zinc-800 flex items-center justify-center">
-            <svg viewBox="0 0 100 100" className="w-full h-full">
-              {/* Links */}
-              {previewLinks.map((l, i) => (
-                <line key={i} x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2}
-                  stroke="#475569" strokeWidth="0.8" opacity="0.6" />
+          {/* Mini SVG preview — hierarchical layout */}
+          <div className="flex-shrink-0 w-24 h-24 rounded-lg bg-zinc-950 border border-zinc-800 flex items-center justify-center overflow-hidden">
+            <svg viewBox="0 0 96 96" className="w-full h-full">
+              {/* Edges (straight lines — easy to trace) */}
+              {layout.edges.map((e, i) => (
+                <line
+                  key={i}
+                  x1={e.x1 * scaleX}
+                  y1={e.y1 * scaleY}
+                  x2={e.x2 * scaleX}
+                  y2={e.y2 * scaleY}
+                  stroke="#475569"
+                  strokeWidth="0.7"
+                  opacity="0.55"
+                />
               ))}
-              {/* Nodes */}
-              {positioned.map((n) => (
-                <circle key={n.node_id} cx={n.px} cy={n.py} r="3.5"
-                  fill={color(n)} stroke="white" strokeWidth="0.6" />
+              {/* Nodes (small dots colored by role) */}
+              {layout.positionedNodes.map((n) => (
+                <circle
+                  key={n.node_id}
+                  cx={n.x * scaleX}
+                  cy={n.y * scaleY}
+                  r="2.8"
+                  fill={getNodeColor(n)}
+                  stroke="white"
+                  strokeWidth="0.5"
+                />
               ))}
-              {nodes.length > 12 && (
-                <text x="50" y="96" textAnchor="middle" fontSize="6" fill="#71717a">
-                  +{nodes.length - 12} more
-                </text>
-              )}
             </svg>
           </div>
 

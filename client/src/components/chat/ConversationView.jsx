@@ -1,4 +1,4 @@
-import { ArrowUp } from 'lucide-react';
+import { ArrowUp, Square, Copy, Check } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -20,7 +20,7 @@ import TopologyPreviewCard from './TopologyPreviewCard.jsx';
 export default function ConversationView() {
   const {
     activeSessionId, messages, streamingText, isStreaming, activeTool,
-    sendMessage,
+    sendMessage, stopStreaming,
   } = useChatStore();
 
   const [text, setText] = useState('');
@@ -127,12 +127,17 @@ export default function ConversationView() {
               style={{ minHeight: '24px' }}
             />
             <button
-              onClick={handleSend}
-              disabled={!text.trim() || isStreaming}
-              className="flex-shrink-0 inline-flex items-center justify-center w-8 h-8 rounded-full bg-brand-500 text-white hover:bg-brand-600 disabled:bg-zinc-700 disabled:cursor-not-allowed transition-colors"
-              aria-label="Send message"
+              onClick={isStreaming ? stopStreaming : handleSend}
+              disabled={!isStreaming && !text.trim()}
+              className={`flex-shrink-0 inline-flex items-center justify-center w-8 h-8 rounded-full transition-colors ${
+                isStreaming
+                  ? 'bg-white text-zinc-900 hover:bg-zinc-200'
+                  : 'bg-brand-500 text-white hover:bg-brand-600 disabled:bg-zinc-700 disabled:cursor-not-allowed'
+              }`}
+              aria-label={isStreaming ? 'Stop generating' : 'Send message'}
+              title={isStreaming ? 'Stop generating' : 'Send message'}
             >
-              <ArrowUp size={16} />
+              {isStreaming ? <Square size={14} fill="currentColor" /> : <ArrowUp size={16} />}
             </button>
           </div>
         </div>
@@ -149,6 +154,73 @@ function Avatar() {
         <circle cx="6" cy="6" r="2" /><circle cx="18" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="18" r="2" />
         <path d="M8 6h8M6 8v8M18 8v8M8 18h8" />
       </svg>
+    </div>
+  );
+}
+
+// ── Copy button (reusable) ─────────────────────────────────
+function CopyButton({ text, label = 'Copy', className = '' }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async (e) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback for older browsers
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch {}
+      document.body.removeChild(ta);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+  return (
+    <button
+      onClick={handleCopy}
+      className={`inline-flex items-center gap-1.5 text-xs transition-colors ${className} ${
+        copied ? 'text-emerald-400' : 'text-zinc-500 hover:text-zinc-200'
+      }`}
+      aria-label={copied ? 'Copied' : label}
+    >
+      {copied ? <Check size={13} strokeWidth={2.5} /> : <Copy size={13} />}
+      {copied ? 'Copied' : label}
+    </button>
+  );
+}
+
+// ── Code block with copy button on the right ──────────────
+function CodeBlock({ children, className }) {
+  // Extract the raw text from the children (ReactMarkdown passes the code as a string)
+  const codeText = typeof children === 'string'
+    ? children
+    : Array.isArray(children)
+      ? children.join('')
+      : String(children || '');
+
+  // Detect language from className (ReactMarkdown adds "language-xxx")
+  const langMatch = className?.match(/language-(\w+)/);
+  const lang = langMatch ? langMatch[1] : '';
+
+  return (
+    <div className="relative group my-3">
+      <div className="rounded-lg border border-zinc-700 bg-zinc-950 overflow-hidden">
+        {/* Header bar with language + copy button */}
+        <div className="flex items-center justify-between px-3 py-1.5 border-b border-zinc-800 bg-zinc-900/60">
+          <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider">
+            {lang || 'code'}
+          </span>
+          <CopyButton text={codeText} label="Copy" className="!text-[11px]" />
+        </div>
+        {/* Code content */}
+        <pre className="overflow-x-auto p-3 text-xs leading-relaxed">
+          <code className={className}>{children}</code>
+        </pre>
+      </div>
     </div>
   );
 }
@@ -175,11 +247,30 @@ function MessageItem({ message }) {
   // conversation. This keeps them anchored even when the user sends more
   // messages afterward.
   return (
-    <div className="flex gap-4 animate-fade-in-up">
+    <div className="flex gap-4 animate-fade-in-up group">
       <Avatar />
       <div className="flex-1 min-w-0">
         <div className="prose prose-invert max-w-none text-[16px] leading-relaxed">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              // Render fenced code blocks with the CodeBlock component (copy button)
+              code({ node, inline, className, children, ...props }) {
+                if (inline) {
+                  // Inline code — no copy button, just styled
+                  return (
+                    <code className="px-1.5 py-0.5 rounded bg-zinc-800 text-emerald-300 text-[0.875em] font-mono" {...props}>
+                      {children}
+                    </code>
+                  );
+                }
+                // Fenced code block — use CodeBlock with copy button
+                return <CodeBlock className={className}>{children}</CodeBlock>;
+              },
+            }}
+          >
+            {message.content}
+          </ReactMarkdown>
         </div>
         {message.toolSummary && (
           <div className="mt-3 inline-flex items-center gap-1.5 text-sm text-zinc-400 bg-zinc-800/50 rounded-md px-2.5 py-1.5 border border-zinc-700">
@@ -199,6 +290,12 @@ function MessageItem({ message }) {
         {message.exportKit && (
           <div className="mt-4">
             <DownloadKit exportKit={message.exportKit} />
+          </div>
+        )}
+        {/* Copy button under the assistant message (appears on hover) */}
+        {message.content && (
+          <div className="mt-2 -ml-1">
+            <CopyButton text={message.content} label="Copy message" />
           </div>
         )}
       </div>

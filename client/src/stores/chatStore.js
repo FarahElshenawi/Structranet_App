@@ -152,6 +152,35 @@ export const useChatStore = create((set, get) => ({
     }
   },
 
+  // ── Stop streaming ───────────────────────────────────────
+  // Called when the user clicks the stop button while the AI is responding.
+  // Saves any accumulated streaming text as a partial assistant message
+  // (so the user doesn't lose what was already generated), clears the
+  // streaming/tool UI state, but keeps the SSE connection alive so any
+  // final events (topology_ready, deployment_ready, complete) still get
+  // processed and attached to the message.
+  stopStreaming: () => {
+    const sessionId = get().activeSessionId;
+    if (!sessionId) return;
+
+    // If there's accumulated streaming text, save it as a partial message
+    if (get().streamingText) {
+      const text = get().streamingText;
+      set((s) => ({
+        streamingText: '',
+        messages: {
+          ...s.messages,
+          [sessionId]: [...(s.messages[sessionId] || []), {
+            role: 'assistant',
+            content: text + '\n\n_(stopped by user)_',
+            createdAt: new Date().toISOString(),
+          }],
+        },
+      }));
+    }
+    set({ isStreaming: false, activeTool: null });
+  },
+
   // ── SSE event handler — THE single entry point ────────
   handleSSEEvent: (event, data) => {
     const sessionId = get().activeSessionId;

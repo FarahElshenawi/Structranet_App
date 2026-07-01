@@ -29,9 +29,48 @@ load_dotenv()
 
 logger = logging.getLogger("structranet.llm_utils")
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Safe env-var parsing helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+# These helpers gracefully handle the case where an env var is set to an empty
+# string or a non-numeric value. Without them, `float(os.getenv("X", "120"))`
+# crashes with `ValueError: could not convert string to float: ''` when the var
+# is present but empty (e.g. `LLM_CALL_TIMEOUT=` in .env). With them, an invalid
+# value falls back to the default and logs a warning.
+
+
+def _env_float(key: str, default: float) -> float:
+    """Read a float env var, falling back to `default` on missing/invalid value."""
+    raw = os.getenv(key)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        logger.warning(
+            "Invalid float for env var %s=%r — using default %s", key, raw, default,
+        )
+        return default
+
+
+def _env_int(key: str, default: int) -> int:
+    """Read an int env var, falling back to `default` on missing/invalid value."""
+    raw = os.getenv(key)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        logger.warning(
+            "Invalid int for env var %s=%r — using default %s", key, raw, default,
+        )
+        return default
+
+
 # Per-call timeout (seconds) — controls how long each individual API request
 # may take before raising APITimeoutError.  Override via LLM_CALL_TIMEOUT env var.
-_LLM_CALL_TIMEOUT = float(os.getenv("LLM_CALL_TIMEOUT", "120"))
+_LLM_CALL_TIMEOUT = _env_float("LLM_CALL_TIMEOUT", 120.0)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Lazy singleton OpenAI client

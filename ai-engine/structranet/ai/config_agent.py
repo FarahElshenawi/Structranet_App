@@ -35,7 +35,7 @@ from dotenv import load_dotenv
 from structranet.constants.gns3 import VLAN_PATCHED_KEY
 from structranet.constants.phase2 import ALLOWED_VALUE_TYPES, SOFTWARE_CONFIG_KEYS
 from structranet.ai.context_builder import build_configuration_brief
-from structranet.ai.llm_utils import _call_with_retry, _extract_json, _get_client
+from structranet.ai.llm_utils import _call_with_retry, _env_int, _extract_json, _get_client
 from structranet.constants.schema import GNS3Project
 from structranet.ai.security_prompts import get_config_security_prompt
 from structranet.generation.topology_finalizer import apply_switch_port_patches
@@ -43,8 +43,8 @@ from structranet.generation.topology_finalizer import apply_switch_port_patches
 load_dotenv()
 logger = logging.getLogger("structranet.config_agent")
 
-DEFAULT_MODEL = os.getenv("AI_MODEL", "poolside/laguna-m.1:free")
-BASE_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "16384"))
+DEFAULT_MODEL = os.getenv("AI_MODEL", "openrouter/owl-alpha")
+BASE_MAX_TOKENS = _env_int("AI_MAX_TOKENS", 16384)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

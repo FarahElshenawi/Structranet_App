@@ -50,16 +50,63 @@ export const useChatStore = create((set, get) => ({
   selectSession: async (sessionId) => {
     set({ activeSessionId: sessionId, loadingSession: true, streamingText: '', isStreaming: false, activeTool: null, error: null });
     try {
-      const { session, topology } = await sessionApi.get(sessionId);
-      set((s) => ({
-        messages: { ...s.messages, [sessionId]: session.messages || [] },
-        topology: topology ? {
+      const { session, topology, exportJob } = await sessionApi.get(sessionId);
+      // Attach the loaded topology to the last assistant message that
+      // produced it (generate/edit_topology), so it renders inline in the
+      // correct chronological position — not floating at the bottom.
+      const loadedMessages = session.messages || [];
+      if (topology) {
+        const topoData = {
           topologyId: topology._id,
           topology_dict: topology.topologyDict,
+          topology_data: { name: topology.name, node_count: topology.nodeCount, link_count: topology.linkCount },
           name: topology.name,
           nodeCount: topology.nodeCount,
           linkCount: topology.linkCount,
-        } : null,
+        };
+        for (let i = loadedMessages.length - 1; i >= 0; i--) {
+          if (loadedMessages[i].role === 'assistant' &&
+              (loadedMessages[i].tool === 'generate_topology' || loadedMessages[i].tool === 'edit_topology')) {
+            loadedMessages[i] = { ...loadedMessages[i], topology: topoData };
+            break;
+          }
+        }
+      }
+      // Reconstruct the exportKit from the loaded export job and attach it
+      // to the last assistant message — so the download buttons persist
+      // across session switches and page reloads. The export job from the
+      // server has a different shape than the deployment_ready SSE event,
+      // so we rebuild the files array + deviceConfigs here.
+      if (exportJob && exportJob.status === 'complete') {
+        const gns3Name = exportJob.files?.gns3Project
+          ? exportJob.files.gns3Project.split(/[\\/]/).pop()
+          : 'project.gns3project';
+        // Derive device count from finalDict if available
+        const deviceNames = exportJob.finalDict?.topology?.nodes
+          ?.filter(n => n.node_type === 'dynamips' || n.node_type === 'iou' || n.node_type === 'qemu')
+          .map(n => n.name) || [];
+        const exportKitData = {
+          exportId: exportJob._id,
+          files: [
+            { name: gns3Name, type: 'gns3project', size: null },
+            { name: 'configs.zip', type: 'configs', size: null },
+            { name: 'requirements.txt', type: 'manifest', size: null },
+          ],
+          securityProfile: exportJob.securityProfile,
+          validation: exportJob.validation,
+          deviceConfigs: deviceNames,
+        };
+        for (let i = loadedMessages.length - 1; i >= 0; i--) {
+          if (loadedMessages[i].role === 'assistant') {
+            loadedMessages[i] = { ...loadedMessages[i], exportKit: exportKitData };
+            break;
+          }
+        }
+      }
+      set((s) => ({
+        messages: { ...s.messages, [sessionId]: loadedMessages },
+        topology: null,  // floating state stays null — topology is on the message
+        exportKit: null, // floating state stays null — exportKit is on the message
         loadingSession: false,
       }));
       sseManager.connect(sessionId, get().handleSSEEvent);
@@ -145,8 +192,21 @@ export const useChatStore = create((set, get) => ({
           } : s.messages,
           activeTool: null,
         }));
-        // If there was streaming text before tool_result, save it as a message
+        // Attach the pending topology to a message so it renders inline.
+        //
+        // Two cases:
+        //  (a) streamingText is non-empty: the LLM's pre-tool text hasn't been
+        //      saved yet (agent_message hasn't fired). Save it as a new message
+        //      with the topology attached.
+        //  (b) streamingText is empty: agent_message already fired and saved the
+        //      pre-tool text as a message. Attach the topology to THAT last
+        //      assistant message instead — otherwise the topology never gets
+        //      attached and never renders.
+        const pendingTopo = (data.tool === 'generate_topology' || data.tool === 'edit_topology')
+          ? get().topology : null;
+
         if (get().streamingText) {
+          // Case (a): save the streaming text as a new message with topology
           const text = get().streamingText;
           set((s) => ({
             streamingText: '',
@@ -157,10 +217,28 @@ export const useChatStore = create((set, get) => ({
                 content: text,
                 tool: data.tool,
                 toolSummary: data.summary,
+                topology: pendingTopo,
                 createdAt: new Date().toISOString(),
               }],
             },
+            topology: pendingTopo ? null : s.topology,
           }));
+        } else if (pendingTopo) {
+          // Case (b): agent_message already saved the text — attach topology
+          // to the last assistant message in the array.
+          set((s) => {
+            const msgs = s.messages[sessionId] ? [...s.messages[sessionId]] : [];
+            for (let i = msgs.length - 1; i >= 0; i--) {
+              if (msgs[i].role === 'assistant') {
+                msgs[i] = { ...msgs[i], topology: pendingTopo };
+                break;
+              }
+            }
+            return {
+              messages: { ...s.messages, [sessionId]: msgs },
+              topology: null,
+            };
+          });
         }
         break;
 
@@ -177,7 +255,26 @@ export const useChatStore = create((set, get) => ({
         break;
 
       case 'deployment_ready':
-        set({ exportKit: data });
+        // Attach the export kit to the LAST assistant message in the active
+        // session, so it renders inline with that message (in the correct
+        // chronological position) instead of floating at the bottom of the
+        // conversation. This keeps the download buttons anchored to the
+        // assistant message that produced them, even when the user sends
+        // more messages afterward.
+        set((s) => {
+          const msgs = s.messages[sessionId] ? [...s.messages[sessionId]] : [];
+          // Find the last assistant message (the one that triggered the export)
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].role === 'assistant') {
+              msgs[i] = { ...msgs[i], exportKit: data };
+              break;
+            }
+          }
+          return {
+            messages: { ...s.messages, [sessionId]: msgs },
+            exportKit: null,  // clear floating state — it's now on the message
+          };
+        });
         break;
 
       case 'agent_message':

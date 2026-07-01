@@ -925,6 +925,25 @@ def cmd_export(args: argparse.Namespace) -> None:
             if content:
                 config_texts[name] = content
 
+    # ── Generate image manifest ───────────────────────────────────────────
+    # Writes a user-friendly "Shopping List" checklist of required images,
+    # so the user knows what to install in GNS3 before importing the project.
+    # Uses the same generate_image_manifest() helper that cmd_generate uses.
+    _emit_event("thought", {"type": "info", "content": "Generating image requirements checklist..."})
+    manifest_file = os.path.join(output_dir, "image_manifest.txt")
+    try:
+        from structranet.ai.agent import generate_image_manifest  # noqa: PLC0415
+        generate_image_manifest(
+            final_dict,
+            template_image_map,
+            manifest_file,
+        )
+    except Exception as exc:
+        logging.getLogger("wrapper").warning(
+            "Image manifest generation failed: %s", exc
+        )
+        manifest_file = None  # Don't include in response if it failed
+
     # ── Build response ────────────────────────────────────────────────────
     response = {
         "success": True,
@@ -934,6 +953,7 @@ def cmd_export(args: argparse.Namespace) -> None:
         "gns3project_path": gns3project_path,
         "config_review_dir": config_review_dir,
         "config_texts": config_texts,
+        "manifest_file": manifest_file,
     }
 
     if validation_result is not None:

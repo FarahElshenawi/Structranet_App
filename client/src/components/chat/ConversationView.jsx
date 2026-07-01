@@ -20,7 +20,7 @@ import TopologyPreviewCard from './TopologyPreviewCard.jsx';
 export default function ConversationView() {
   const {
     activeSessionId, messages, streamingText, isStreaming, activeTool,
-    topology, exportKit, sendMessage,
+    sendMessage,
   } = useChatStore();
 
   const [text, setText] = useState('');
@@ -109,12 +109,6 @@ export default function ConversationView() {
               <span>Thinking…</span>
             </div>
           )}
-
-          {/* ── Topology preview (after generation completes) ── */}
-          {topology && <TopologyPreviewCard topology={topology} />}
-
-          {/* ── Download kit (after export completes) ────── */}
-          {exportKit && <DownloadKit exportKit={exportKit} />}
         </div>
       </div>
 
@@ -174,7 +168,12 @@ function MessageItem({ message }) {
     );
   }
 
-  // Assistant response — prose prose-invert for clean markdown rendering
+  // Assistant response — prose prose-invert for clean markdown rendering.
+  // The topology preview and download kit are ATTACHED to the message that
+  // produced them (msg.topology / msg.exportKit), so they render inline in
+  // the correct chronological position — not floating at the bottom of the
+  // conversation. This keeps them anchored even when the user sends more
+  // messages afterward.
   return (
     <div className="flex gap-4 animate-fade-in-up">
       <Avatar />
@@ -188,6 +187,18 @@ function MessageItem({ message }) {
               <polyline points="20 6 9 17 4 12" />
             </svg>
             {message.toolSummary}
+          </div>
+        )}
+        {/* Topology preview — inline with this message */}
+        {message.topology && (
+          <div className="mt-4">
+            <TopologyPreviewCard topology={message.topology} />
+          </div>
+        )}
+        {/* Download kit — inline with this message */}
+        {message.exportKit && (
+          <div className="mt-4">
+            <DownloadKit exportKit={message.exportKit} />
           </div>
         )}
       </div>

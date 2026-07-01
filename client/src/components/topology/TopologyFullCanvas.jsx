@@ -67,10 +67,10 @@ export default function TopologyFullCanvas({ topology, onClose }) {
     })).filter(l => l.source && l.target);
 
     const sim = forceSimulation(simNodes)
-      .force('charge', forceManyBody().strength(-400))
-      .force('link', forceLink(simLinks).id(d => d.node_id).distance(120).strength(0.1))
+      .force('charge', forceManyBody().strength(-520))
+      .force('link', forceLink(simLinks).id(d => d.node_id).distance(165).strength(0.12))
       .force('center', forceCenter(500, 350))
-      .force('collide', forceCollide(40))
+      .force('collide', forceCollide(74))
       .stop();
 
     for (let i = 0; i < 80; i++) sim.tick();
@@ -151,29 +151,152 @@ export default function TopologyFullCanvas({ topology, onClose }) {
         />
 
         <svg ref={svgRef} className="w-full h-full relative">
+          <defs>
+            <linearGradient id="sn-edge-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor="#10b981" />
+              <stop offset="100%" stopColor="#22d3ee" />
+            </linearGradient>
+            <filter id="sn-edge-glow" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="1.3" result="b" />
+              <feMerge>
+                <feMergeNode in="b" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+          <style>{`
+            @keyframes sn-flow-anim { to { stroke-dashoffset: -24; } }
+            .sn-flow-edge { stroke-dasharray: 5 6; animation: sn-flow-anim 1s linear infinite; }
+            .sn-node-card { transition: box-shadow .15s ease, border-color .15s ease; }
+            .sn-node-card:hover { border-color: rgba(16,185,129,0.55) !important; }
+          `}</style>
           <g className="zoom-layer">
-            {/* Links */}
-            {links.map((l, i) => (
-              <line key={i} x1={l.sx} y1={l.sy} x2={l.tx} y2={l.ty}
-                stroke="#475569" strokeWidth="2" opacity="0.55" />
-            ))}
-            {/* Nodes */}
+            {/* Links — emerald→cyan gradient bezier with animated flow */}
+            {links.map((l, i) => {
+              const involves = selected && (l.source === selected.node_id || l.target === selected.node_id);
+              const mx = (l.sx + l.tx) / 2;
+              const my = (l.sy + l.ty) / 2;
+              const d = `M ${l.sx} ${l.sy} C ${l.sx} ${my} ${l.tx} ${my} ${l.tx} ${l.ty}`;
+              return (
+                <path
+                  key={i}
+                  d={d}
+                  fill="none"
+                  stroke={involves ? '#34d399' : 'url(#sn-edge-grad)'}
+                  strokeWidth={involves ? 2.6 : 1.7}
+                  strokeLinecap="round"
+                  className="sn-flow-edge"
+                  opacity={involves ? 0.95 : 0.62}
+                  filter="url(#sn-edge-glow)"
+                />
+              );
+            })}
+            {/* Nodes — card glyphs (icon + accent bar + label) */}
             {nodes.map((n) => {
               const color = nodeColor(n);
               const isSelected = selected?.node_id === n.node_id;
               return (
-                <g key={n.node_id}
+                <g
+                  key={n.node_id}
                   transform={`translate(${n.x}, ${n.y})`}
                   className="cursor-pointer"
-                  onClick={() => setSelected(n)}>
-                  <circle r={isSelected ? 32 : 28} fill={color} opacity={isSelected ? 0.25 : 0.12} />
-                  <circle r="20" fill={color} stroke="white" strokeWidth="3" />
+                  onClick={() => setSelected(n)}
+                >
+                  {/* selection ping ring */}
                   {isSelected && (
-                    <circle r="26" fill="none" stroke={color} strokeWidth="2" strokeDasharray="4 3" opacity="0.8" />
+                    <circle r="34" fill="none" stroke="#10b981" strokeWidth="1.6" opacity="0.7">
+                      <animate attributeName="r" values="30;48" dur="1.8s" repeatCount="indefinite" />
+                      <animate attributeName="opacity" values="0.7;0" dur="1.8s" repeatCount="indefinite" />
+                    </circle>
                   )}
-                  <text y="38" textAnchor="middle" fontSize="11" fill="#e2e8f0" fontWeight="600">
-                    {n.name}
-                  </text>
+                  <foreignObject x={-72} y={-24} width={144} height={48}>
+                    <div
+                      className="sn-node-card"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'stretch',
+                        width: '100%',
+                        height: '100%',
+                        borderRadius: 10,
+                        overflow: 'hidden',
+                        background: 'rgba(24,24,27,0.96)',
+                        border: isSelected
+                          ? '1px solid #10b981'
+                          : '1px solid rgba(63,63,70,0.9)',
+                        boxShadow: isSelected
+                          ? `0 0 0 1px ${color}55, 0 0 26px -6px ${color}cc`
+                          : '0 1px 0 0 rgba(255,255,255,0.03)',
+                      }}
+                    >
+                      {/* colored left accent bar */}
+                      <span
+                        style={{
+                          width: 4,
+                          flexShrink: 0,
+                          background: color,
+                          boxShadow: `0 0 10px -2px ${color}`,
+                        }}
+                      />
+                      {/* icon chip */}
+                      <span
+                        style={{
+                          margin: '6px 0',
+                          marginLeft: 8,
+                          display: 'inline-flex',
+                          width: 30,
+                          height: 30,
+                          flexShrink: 0,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          borderRadius: 7,
+                          background: `${color}22`,
+                          color,
+                        }}
+                      >
+                        {nodeIcon(n)}
+                      </span>
+                      {/* label + model/template */}
+                      <span
+                        style={{
+                          marginLeft: 8,
+                          marginRight: 10,
+                          alignSelf: 'center',
+                          minWidth: 0,
+                          flex: 1,
+                        }}
+                      >
+                        <span
+                          style={{
+                            display: 'block',
+                            fontSize: 12,
+                            fontWeight: 600,
+                            lineHeight: '1.15',
+                            color: '#fafafa',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {n.name}
+                        </span>
+                        <span
+                          style={{
+                            display: 'block',
+                            fontSize: 10,
+                            lineHeight: '1.15',
+                            color: '#a1a1aa',
+                            fontFamily:
+                              'ui-monospace, SFMono-Regular, Menlo, monospace',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {n.template_name || n.node_type}
+                        </span>
+                      </span>
+                    </div>
+                  </foreignObject>
                 </g>
               );
             })}

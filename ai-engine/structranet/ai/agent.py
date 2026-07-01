@@ -49,7 +49,7 @@ from dotenv import load_dotenv
 from structranet.constants.ai import DYNAMIPS_MAX_LINKS, MAX_RETRIES, SINGLE_LINK_TYPES
 from structranet.constants.gns3 import VLAN_PATCHED_KEY
 from structranet.catalog.hw_config import inject_hardware_config
-from structranet.ai.llm_utils import _call_with_retry, _extract_json, _get_client
+from structranet.ai.llm_utils import _call_with_retry, _env_int, _extract_json, _get_client
 from structranet.catalog.port_assigner import build_topology_from_request
 from structranet.constants.schema import (
     Connection,
@@ -65,8 +65,8 @@ from structranet.generation.topology_finalizer import apply_switch_port_patches
 load_dotenv()
 logger = logging.getLogger("structranet.ai_agent")
 
-DEFAULT_MODEL = os.getenv("AI_MODEL", "poolside/laguna-m.1:free")
-BASE_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "16384"))
+DEFAULT_MODEL = os.getenv("AI_MODEL", "openrouter/owl-alpha")
+BASE_MAX_TOKENS = _env_int("AI_MAX_TOKENS", 16384)
 
 # Node types that never need a disk image
 _BUILTIN_NODE_TYPES: frozenset = frozenset(

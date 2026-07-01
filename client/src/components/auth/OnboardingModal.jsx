@@ -50,6 +50,7 @@ export default function OnboardingModal() {
 
   const [saving, setSaving] = useState(false);
   const [showDeviceList, setShowDeviceList] = useState(false);
+  const [selectedDevice, setSelectedDevice] = useState(null);  // the device the user is currently mapping
   const searchRef = useRef(null);
 
   // ── GNS3 version options ──────────────────────────────────
@@ -89,6 +90,13 @@ export default function OnboardingModal() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, []); // eslint-disable-line
+
+  // ── Focus search when device picker opens ─────────────────
+  useEffect(() => {
+    if (showDeviceList && !selectedDevice) {
+      setTimeout(() => searchRef.current?.focus(), 50);
+    }
+  }, [showDeviceList, selectedDevice]);
 
   // ── Filtered devices for the image-mapping section ───────
   const filteredDevices = useMemo(() => {
@@ -319,62 +327,130 @@ export default function OnboardingModal() {
                   </div>
                 )}
 
-                {/* + Add button (toggles the searchable device list) */}
-                <button
-                  onClick={() => setShowDeviceList(!showDeviceList)}
-                  className="w-full flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-zinc-700 hover:border-emerald-500/50 hover:bg-zinc-800/40 text-zinc-400 hover:text-emerald-400 text-xs font-medium py-2.5 transition-all"
-                >
-                  {showDeviceList ? (
-                    <>Hide device list</>
-                  ) : (
-                    <><Plus size={14} /> Add device mapping</>
-                  )}
-                </button>
+                {/* + Add button — opens the device picker (one device at a time) */}
+                {!showDeviceList && (
+                  <button
+                    onClick={() => setShowDeviceList(true)}
+                    className="w-full flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-zinc-700 hover:border-emerald-500/50 hover:bg-zinc-800/40 text-zinc-400 hover:text-emerald-400 text-xs font-medium py-2.5 transition-all"
+                  >
+                    <Plus size={14} /> Add device mapping
+                  </button>
+                )}
 
-                {/* Searchable device list (collapsible) */}
+                {/* Device picker + image input (additive flow) */}
                 {showDeviceList && (
-                  <div className="mt-2.5 space-y-2 animate-fade-in">
-                    <div className="relative">
-                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
-                      <input
-                        ref={searchRef}
-                        type="text"
-                        value={query}
-                        onChange={(e) => setQuery(e.target.value)}
-                        placeholder="Search devices... (e.g. 'Cisco', 'IOSv')"
-                        className="w-full pl-9 pr-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all"
-                      />
+                  <div className="mt-2.5 space-y-2.5 animate-fade-in rounded-lg border border-zinc-700 bg-zinc-800/30 p-3">
+                    {/* Step 1: Pick a device (searchable dropdown) */}
+                    <div>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">
+                        Pick a device
+                      </label>
+                      <div className="relative">
+                        <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+                        <input
+                          ref={searchRef}
+                          type="text"
+                          value={query}
+                          onChange={(e) => setQuery(e.target.value)}
+                          placeholder="Search... (e.g. 'Cisco 7200', 'IOSv')"
+                          className="w-full pl-9 pr-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all"
+                        />
+                      </div>
+
+                      {/* Device picker results — the user PICKS one device */}
+                      {loadingCatalog && (
+                        <div className="flex items-center justify-center py-4 text-zinc-500 text-xs">
+                          <span className="inline-block w-4 h-4 border-2 border-zinc-600 border-t-emerald-500 rounded-full animate-spin mr-2" />
+                          Loading devices...
+                        </div>
+                      )}
+                      {catalogError && (
+                        <div className="rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-300 mt-2">
+                          {catalogError}
+                        </div>
+                      )}
+                      {!loadingCatalog && !catalogError && (
+                        <div className="mt-2 max-h-40 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/50">
+                          {filteredDevices.length === 0 && (
+                            <div className="text-center py-4 text-zinc-500 text-xs">
+                              No devices match "{query}"
+                            </div>
+                          )}
+                          {filteredDevices.map(device => {
+                            const isMapped = !!(imageMap[device.template] || '').trim();
+                            const isSelected = selectedDevice?.template === device.template;
+                            return (
+                              <button
+                                key={device.template}
+                                onClick={() => setSelectedDevice(device)}
+                                className={`w-full flex items-center gap-2 px-3 py-2 text-left border-b border-zinc-800 last:border-b-0 transition-colors ${
+                                  isSelected ? 'bg-emerald-500/10' : 'hover:bg-zinc-800/50'
+                                }`}
+                              >
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-xs font-medium text-white truncate">{device.template}</span>
+                                    {device.platform && (
+                                      <span className="text-[9px] font-mono text-zinc-500 bg-zinc-800 px-1 py-0.5 rounded flex-shrink-0">
+                                        {device.platform}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {device.default_image && (
+                                    <div className="text-[10px] text-zinc-600 font-mono truncate mt-0.5">
+                                      default: {device.default_image}
+                                    </div>
+                                  )}
+                                </div>
+                                {isMapped && (
+                                  <Check size={12} className="flex-shrink-0 text-emerald-400" strokeWidth={3} />
+                                )}
+                                {isSelected && !isMapped && (
+                                  <Check size={12} className="flex-shrink-0 text-emerald-400" strokeWidth={3} />
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
 
-                    {loadingCatalog && (
-                      <div className="flex items-center justify-center py-6 text-zinc-500 text-xs">
-                        <span className="inline-block w-4 h-4 border-2 border-zinc-600 border-t-emerald-500 rounded-full animate-spin mr-2" />
-                        Loading devices...
-                      </div>
-                    )}
-                    {catalogError && (
-                      <div className="rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-300">
-                        {catalogError}
-                      </div>
-                    )}
-                    {!loadingCatalog && !catalogError && filteredDevices.length === 0 && (
-                      <div className="text-center py-6 text-zinc-500 text-xs">
-                        No devices match "{query}"
-                      </div>
-                    )}
-
-                    {!loadingCatalog && !catalogError && filteredDevices.length > 0 && (
-                      <div className="max-h-64 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/50">
-                        {filteredDevices.map(device => (
-                          <DeviceRow
-                            key={device.template}
-                            device={device}
-                            value={imageMap[device.template] || ''}
-                            onChange={(val) => handleImageChange(device.template, val)}
-                            onUseDefault={() => handleUseDefault(device.template, device.default_image)}
-                            onClear={() => handleClear(device.template)}
-                          />
-                        ))}
+                    {/* Step 2: Write the image filename (only after a device is picked) */}
+                    {selectedDevice && (
+                      <div className="animate-fade-in">
+                        <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">
+                          Image filename <span className="text-zinc-600 normal-case font-normal">(copy from your GNS3 server)</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={imageMap[selectedDevice.template] || ''}
+                          onChange={(e) => handleImageChange(selectedDevice.template, e.target.value)}
+                          placeholder={selectedDevice.default_image ? `e.g. ${selectedDevice.default_image}` : 'image filename'}
+                          autoFocus
+                          className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-xs text-white placeholder-zinc-600 font-mono focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all"
+                        />
+                        {selectedDevice.default_image && (
+                          <button
+                            onClick={() => handleUseDefault(selectedDevice.template, selectedDevice.default_image)}
+                            className="mt-1.5 text-[10px] text-zinc-500 hover:text-emerald-400 transition-colors"
+                          >
+                            Use catalog default: {selectedDevice.default_image}
+                          </button>
+                        )}
+                        <div className="flex items-center gap-2 mt-2">
+                          <button
+                            onClick={() => { setSelectedDevice(null); setQuery(''); setShowDeviceList(false); }}
+                            className="flex-1 text-xs text-zinc-400 hover:text-white py-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+                          >
+                            Done
+                          </button>
+                          <button
+                            onClick={() => { setSelectedDevice(null); setQuery(''); }}
+                            className="flex-1 text-xs text-zinc-400 hover:text-emerald-400 py-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+                          >
+                            Add another device
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>

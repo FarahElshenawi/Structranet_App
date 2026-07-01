@@ -8,10 +8,18 @@ export default {
       colors: {
         // Primary brand — Emerald green
         brand: {
-          50: '#ecfdf5', 100: '#d1fae5', 200: '#a7f3d0', 300: '#6ee7b7',
-          400: '#34d399', 500: '#10b981', 600: '#059669', 700: '#047857',
-          800: '#065f46', 900: '#064e3b', 950: '#022c22',
-        },
+  50:  '#e6f4ef',
+  100: '#c0e4d6',
+  200: '#88ceac',
+  300: '#4fb083',
+  400: '#1f936d',
+  500: '#00875e',  // primary
+  600: '#006e4d',
+  700: '#00563b',
+  800: '#003e2a',
+  900: '#002a1c',
+  950: '#001a11',
+},
         // Navy — deep slate (used by landing components)
         navy: {
           50: '#f8fafc', 100: '#f1f5f9', 200: '#e2e8f0', 300: '#cbd5e1',
@@ -26,10 +34,18 @@ export default {
         },
         // Accent — emerald alias (used by topology preview)
         accent: {
-          50: '#ecfdf5', 100: '#d1fae5', 200: '#a7f3d0', 300: '#6ee7b7',
-          400: '#34d399', 500: '#10b981', 600: '#059669', 700: '#047857',
-          800: '#065f46', 900: '#064e3b', 950: '#022c22',
-        },
+  50:  '#e6f4ef',
+  100: '#c0e4d6',
+  200: '#88ceac',
+  300: '#4fb083',
+  400: '#1f936d',
+  500: '#00875e',
+  600: '#006e4d',
+  700: '#00563b',
+  800: '#003e2a',
+  900: '#002a1c',
+  950: '#001a11',
+},
         // Cream — warm off-white (used by LandingPage root)
         cream: {
           50: '#0f172a',  // mapped to dark navy (landing is dark mode)
@@ -47,10 +63,17 @@ export default {
           800: '#92400e', 900: '#78350f',
         },
         success: {
-          50: '#ecfdf5', 100: '#d1fae5', 200: '#a7f3d0', 300: '#6ee7b7',
-          400: '#34d399', 500: '#10b981', 600: '#059669', 700: '#047857',
-          800: '#065f46', 900: '#064e3b',
-        },
+  50:  '#e6f4ef',
+  100: '#c0e4d6',
+  200: '#88ceac',
+  300: '#4fb083',
+  400: '#1f936d',
+  500: '#00875e',
+  600: '#006e4d',
+  700: '#00563b',
+  800: '#003e2a',
+  900: '#002a1c',
+},
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],

@@ -489,24 +489,32 @@ export async function dispatch(sessionId, userId, userMessage) {
       llmParams.tool_choice = 'auto';
       llmParams.max_tokens = config.llm.maxTokens;
 
-      // ── Prompt caching headers (Anthropic/OpenRouter) ────
-      // Caches the system prompt + tool definitions prefix.
-      // Speeds up subsequent calls in the same session (design iterations).
-      // OpenRouter passes these through to Anthropic models.
-      llmParams.extra_headers = {
-        'anthropic-beta': 'prompt-caching-2024-07-31',
-        'HTTP-Referer': 'https://structuranet.ai',
-        'X-Title': 'StructuraNet AI',
-      };
-      // Anthropic-style cache_control on the system message
-      // (OpenRouter translates this for Anthropic-family models)
-      if (messages[0]?.role === 'system') {
-        messages[0] = {
-          ...messages[0],
-          content: [
-            { type: 'text', text: messages[0].content, cache_control: { type: 'ephemeral' } },
-          ],
+      // ── Prompt caching (Anthropic-family models only) ────
+      // The cache_control array format is Anthropic-specific. Non-Anthropic
+      // providers (e.g. Poolside, GPT-4o) reject the array system message
+      // with "data did not match any variant of untagged enum
+      // ChatCompletionRequestSystemMessageContent". Only apply it when the
+      // model is Anthropic-family; otherwise keep the system message as a
+      // plain string.
+      const model = (config.llm.model || '').toLowerCase();
+      const isAnthropicFamily = model.includes('claude') || model.includes('anthropic');
+
+      if (isAnthropicFamily) {
+        llmParams.extra_headers = {
+          'anthropic-beta': 'prompt-caching-2024-07-31',
+          'HTTP-Referer': 'https://structuranet.ai',
+          'X-Title': 'StructuraNet AI',
         };
+        // Anthropic-style cache_control on the system message
+        // (OpenRouter translates this for Anthropic-family models)
+        if (messages[0]?.role === 'system' && typeof messages[0].content === 'string') {
+          messages[0] = {
+            ...messages[0],
+            content: [
+              { type: 'text', text: messages[0].content, cache_control: { type: 'ephemeral' } },
+            ],
+          };
+        }
       }
     } else {
       // CHAT fast-path: NO tools, lean prompt, smaller token budget

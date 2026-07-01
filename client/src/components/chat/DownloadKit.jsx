@@ -80,30 +80,21 @@ export default function DownloadKit({ exportKit }) {
   const validationPassed = validation?.passed !== false;
 
   return (
-    <div className="flex gap-4 animate-fade-in-up">
-      {/* Avatar (matches assistant message layout) */}
-      <div className="flex-shrink-0 w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-700 text-white flex items-center justify-center shadow-md shadow-emerald-500/30">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="6" cy="6" r="2" /><circle cx="18" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="18" r="2" />
-          <path d="M8 6h8M6 8v8M18 8v8M8 18h8" />
-        </svg>
-      </div>
-
-      {/* Main card */}
-      <div className="flex-1 min-w-0">
-        {/* Header row */}
-        <div className="flex items-center gap-2 mb-3">
-          <span className="text-sm font-semibold text-white">Deployment kit ready</span>
-          {validationPassed ? (
-            <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 rounded-full px-2 py-0.5">
-              <Check size={11} strokeWidth={3} />
-              Validated
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1 text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-full px-2 py-0.5">
-              Validation issues
-            </span>
-          )}
+    // Renders inline — no avatar wrapper, the parent MessageItem provides it.
+    <div className="animate-fade-in-up">
+      {/* Header row */}
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-sm font-semibold text-white">Deployment kit ready</span>
+        {validationPassed ? (
+          <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 rounded-full px-2 py-0.5">
+            <Check size={11} strokeWidth={3} />
+            Validated
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-full px-2 py-0.5">
+            Validation issues
+          </span>
+        )}
           {securityProfile && securityProfile !== 'none' && (
             <span className="inline-flex items-center text-[11px] text-zinc-400 bg-zinc-800 border border-zinc-700 rounded-full px-2 py-0.5 capitalize">
               {securityProfile} security
@@ -177,7 +168,6 @@ export default function DownloadKit({ exportKit }) {
         <p className="text-[11px] text-zinc-500 mt-3 leading-relaxed">
           Install the required images from the manifest in your GNS3 server before importing the project file.
         </p>
-      </div>
     </div>
   );
 }

@@ -4,6 +4,7 @@
 import { Router } from 'express';
 import { Session } from '../models/Session.js';
 import { Topology } from '../models/Topology.js';
+import { ExportJob } from '../models/Export.js';
 import { validate } from '../middleware/validate.js';
 import { sessionSchemas, messageSchemas } from '../middleware/schemas.js';
 import { requireAuth, sseAuth } from '../middleware/auth.js';
@@ -49,7 +50,13 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     if (session.currentTopologyId) {
       topology = await Topology.findById(session.currentTopologyId);
     }
-    res.json({ session, topology });
+    // Also fetch the export job (if any) so the frontend can reattach
+    // the download buttons to the correct message when reloading a session.
+    let exportJob = null;
+    if (session.currentExportId) {
+      exportJob = await ExportJob.findById(session.currentExportId);
+    }
+    res.json({ session, topology, exportJob });
   } catch (err) { next(err); }
 });
 
